@@ -58,3 +58,13 @@ export async function stopExploit(id: string) {
   const res = await fetch(`${BASE}/exploit/${id}/stop`, { method: "POST" });
   return res.json();
 }
+
+export async function fetchFindScans() {
+  const res = await fetch(`${BASE}/find/scans`);
+  return res.json();
+}
+
+export async function fetchFindTargets(id: string) {
+  const res = await fetch(`${BASE}/find/${id}/targets`);
+  return res.json();
+}

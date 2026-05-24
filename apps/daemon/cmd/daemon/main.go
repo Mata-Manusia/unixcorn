@@ -90,6 +90,10 @@ func main() {
 		v1.GET("/exploit", api.ListExploitScans)
 		v1.GET("/exploit/:id", api.GetExploitScan)
 		v1.GET("/exploit/:id/vulns", api.GetExploitVulns)
+
+		v1.POST("/find/deepsearch", api.DeepSearch)
+		v1.GET("/find/scans", api.ListFindScans)
+		v1.GET("/find/:id/targets", api.GetFindTargets)
 	}
 
 	log.Println("[daemon] listening on :8080")

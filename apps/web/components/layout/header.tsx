@@ -2,10 +2,14 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { ArrowRightStartOnRectangleIcon, SunIcon, MoonIcon } from "@heroicons/react/24/outline";
+import { logout } from "@/lib/auth";
+import { useTheme } from "@/components/theme-provider";
 
 const navItems = [
   { href: "/",       label: "Dashboard" },
+  { href: "/find",   label: "Find" },
   { href: "/recon",  label: "Recon" },
   { href: "/exploit",label: "Exploit" },
   { href: "/logs",   label: "Logs" },
@@ -14,6 +18,13 @@ const navItems = [
 
 export function Header() {
   const pathname = usePathname();
+  const router = useRouter();
+  const { theme, toggle } = useTheme();
+
+  const handleLogout = () => {
+    logout();
+    router.replace("/login");
+  };
 
   return (
     <header className="fixed top-0 z-50 h-14 w-full border-b border-zinc-800 bg-zinc-900">
@@ -56,6 +67,23 @@ export function Header() {
               <p className="text-[10px] text-zinc-600">Administrator</p>
             </div>
           </div>
+          <button
+            onClick={toggle}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            className="flex items-center justify-center rounded border border-zinc-800 bg-zinc-800 p-1.5 text-zinc-500 hover:border-zinc-600 hover:text-zinc-200 transition-colors"
+          >
+            {theme === "dark"
+              ? <SunIcon className="h-4 w-4" />
+              : <MoonIcon className="h-4 w-4" />
+            }
+          </button>
+          <button
+            onClick={handleLogout}
+            title="Logout"
+            className="flex items-center justify-center rounded border border-zinc-800 bg-zinc-800 p-1.5 text-zinc-500 hover:border-red-800 hover:bg-red-950 hover:text-red-400 transition-colors"
+          >
+            <ArrowRightStartOnRectangleIcon className="h-4 w-4" />
+          </button>
         </div>
       </nav>
     </header>

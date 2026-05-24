@@ -24,6 +24,24 @@ func Init(path string) error {
 		return err
 	}
 
+	for _, col := range []string{
+		"ALTER TABLE find_targets ADD COLUMN status_code INTEGER DEFAULT 0",
+		"ALTER TABLE find_targets ADD COLUMN title TEXT DEFAULT ''",
+		"ALTER TABLE find_targets ADD COLUMN tech TEXT DEFAULT ''",
+		"ALTER TABLE find_targets ADD COLUMN ip TEXT DEFAULT ''",
+		"ALTER TABLE find_targets ADD COLUMN final_url TEXT DEFAULT ''",
+		"ALTER TABLE exploit_vulns ADD COLUMN evidence TEXT DEFAULT ''",
+		"ALTER TABLE exploit_vulns ADD COLUMN impact TEXT DEFAULT ''",
+		"ALTER TABLE exploit_vulns ADD COLUMN cwe TEXT DEFAULT ''",
+		"ALTER TABLE exploit_vulns ADD COLUMN owasp TEXT DEFAULT ''",
+		"ALTER TABLE exploit_vulns ADD COLUMN remediation TEXT DEFAULT ''",
+		"ALTER TABLE exploit_vulns ADD COLUMN refs TEXT DEFAULT ''",
+		"ALTER TABLE exploit_vulns ADD COLUMN attack_chain TEXT DEFAULT ''",
+		"ALTER TABLE exploit_vulns ADD COLUMN exploit_code TEXT DEFAULT ''",
+	} {
+		DB.Exec(col) // ignore error — column may already exist
+	}
+
 	log.Println("[db] initialized:", path)
 	return nil
 }
@@ -77,6 +95,28 @@ func migrate() error {
 		cvss        TEXT,
 		timestamp   DATETIME DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (scan_id) REFERENCES exploit_scans(id)
+	);
+
+	CREATE TABLE IF NOT EXISTS find_scans (
+		id          TEXT PRIMARY KEY,
+		category    TEXT NOT NULL,
+		tlds        TEXT NOT NULL,
+		vuln_types  TEXT NOT NULL,
+		status      TEXT NOT NULL DEFAULT 'running',
+		total       INTEGER DEFAULT 0,
+		created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+		finished_at DATETIME
+	);
+
+	CREATE TABLE IF NOT EXISTS find_targets (
+		id        INTEGER PRIMARY KEY AUTOINCREMENT,
+		scan_id   TEXT NOT NULL,
+		domain    TEXT NOT NULL,
+		category  TEXT NOT NULL,
+		indicator TEXT,
+		source    TEXT,
+		status    TEXT DEFAULT 'unknown',
+		FOREIGN KEY (scan_id) REFERENCES find_scans(id)
 	);
 	`
 	_, err := DB.Exec(schema)

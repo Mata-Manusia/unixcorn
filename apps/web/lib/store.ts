@@ -20,6 +20,19 @@ export interface LogEntry {
 
 export type VulnSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 
+export interface AttackChainStep {
+  target: string;
+  payload: string;
+  status: string;
+  extract?: string;
+}
+
+export interface ExploitCode {
+  curl?: string;
+  python?: string;
+  http?: string;
+}
+
 export interface ExploitVuln {
   id: number;
   scan_id: string;
@@ -30,6 +43,14 @@ export interface ExploitVuln {
   poc?: string;
   cve?: string;
   cvss?: string;
+  evidence?: string;
+  impact?: string;
+  cwe?: string;
+  owasp?: string;
+  remediation?: string;
+  refs?: string;          // JSON string of string[]
+  attack_chain?: string;  // JSON string of AttackChainStep[]
+  exploit_code?: string;  // JSON string of ExploitCode
   timestamp: string;
 }
 
