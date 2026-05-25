@@ -1,5 +1,9 @@
 # 🦄 Unixcorn
 
+<img width="1680" height="1050" alt="SCR-20260525-mkxq" src="https://github.com/user-attachments/assets/9216dab2-f7ed-4f8c-b0ab-ccf42e995de1" />
+<img width="1680" height="1050" alt="SCR-20260525-mkfd" src="https://github.com/user-attachments/assets/57529bff-f943-4e66-9bc7-a4fc8a8f59cb" />
+
+
 [![Go Version](https://img.shields.io/github/go-mod/go-version/akufikri/unixcorn?label=Go)](https://golang.org)
 [![Next.js Version](https://img.shields.io/badge/Next.js-15.0-black?logo=next.js)](https://nextjs.org)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
