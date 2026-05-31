@@ -28,6 +28,7 @@ export interface AttackChainStep {
 }
 
 export interface ExploitCode {
+  guide?: string;
   curl?: string;
   python?: string;
   http?: string;

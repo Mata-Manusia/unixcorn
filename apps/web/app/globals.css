@@ -134,16 +134,16 @@
 
 /* Light mode: invert the zinc scale so dark-coded UI becomes light */
 html.light {
-  --color-zinc-950: oklch(0.985 0 0);
-  --color-zinc-900: oklch(0.967 0 0);
-  --color-zinc-800: oklch(0.922 0 0);
-  --color-zinc-700: oklch(0.871 0 0);
-  --color-zinc-600: oklch(0.60 0 0);
-  --color-zinc-500: oklch(0.442 0 0);
-  --color-zinc-400: oklch(0.37 0 0);
-  --color-zinc-300: oklch(0.274 0 0);
-  --color-zinc-200: oklch(0.21 0 0);
-  --color-zinc-100: oklch(0.145 0 0);
-  --color-zinc-50:  oklch(0.09 0 0);
+  --color-zinc-950: #fafafa;
+  --color-zinc-900: #f4f4f5;
+  --color-zinc-800: #e4e4e7;
+  --color-zinc-700: #d4d4d8;
+  --color-zinc-600: #a1a1aa;
+  --color-zinc-500: #52525c;
+  --color-zinc-400: #3f3f46;
+  --color-zinc-300: #27272a;
+  --color-zinc-200: #18181b;
+  --color-zinc-100: #09090b;
+  --color-zinc-50:  #030303;
   color-scheme: light;
 }
