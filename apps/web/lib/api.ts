@@ -1,70 +1,89 @@
+import { authHeaders, logout } from "./auth";
+
 const BASE = "http://localhost:8080/api";
 
-export async function fetchScans() {
-  const res = await fetch(`${BASE}/recon`);
+async function authedFetch(url: string, init?: RequestInit) {
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      ...(init?.headers || {}),
+      ...authHeaders(),
+    },
+  });
+  if (res.status === 401) {
+    logout();
+    if (typeof window !== "undefined") window.location.href = "/login";
+  }
+  return res;
+}
+
+async function authedJSON(url: string, init?: RequestInit) {
+  const res = await authedFetch(url, init);
   return res.json();
 }
 
+export async function fetchScans() {
+  return authedJSON(`${BASE}/recon`);
+}
+
 export async function startScan(target: string, tools?: string[]) {
-  const res = await fetch(`${BASE}/recon/start`, {
+  return authedJSON(`${BASE}/recon/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target, tools }),
   });
-  return res.json();
 }
 
 export async function fetchScanResults(id: string) {
-  const res = await fetch(`${BASE}/recon/${id}/results`);
-  return res.json();
+  return authedJSON(`${BASE}/recon/${id}/results`);
 }
 
 export async function fetchLogs(scanId?: string) {
   const url = scanId ? `${BASE}/logs?scan_id=${scanId}` : `${BASE}/logs`;
-  const res = await fetch(url);
-  return res.json();
+  return authedJSON(url);
 }
 
 export async function fetchPlugins() {
-  const res = await fetch(`${BASE}/plugins`);
-  return res.json();
+  return authedJSON(`${BASE}/plugins`);
 }
 
 export async function startExploit(target: string, phases = "1,2,3,4") {
-  const res = await fetch(`${BASE}/exploit/start`, {
+  return authedJSON(`${BASE}/exploit/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target, phases }),
   });
-  return res.json();
 }
 
 export async function fetchExploitScans() {
-  const res = await fetch(`${BASE}/exploit`);
-  return res.json();
+  return authedJSON(`${BASE}/exploit`);
 }
 
 export async function fetchExploitVulns(id: string) {
-  const res = await fetch(`${BASE}/exploit/${id}/vulns`);
-  return res.json();
+  return authedJSON(`${BASE}/exploit/${id}/vulns`);
 }
 
 export async function stopScan(id: string) {
-  const res = await fetch(`${BASE}/recon/${id}/stop`, { method: "POST" });
-  return res.json();
+  return authedJSON(`${BASE}/recon/${id}/stop`, { method: "POST" });
 }
 
 export async function stopExploit(id: string) {
-  const res = await fetch(`${BASE}/exploit/${id}/stop`, { method: "POST" });
-  return res.json();
+  return authedJSON(`${BASE}/exploit/${id}/stop`, { method: "POST" });
 }
 
 export async function fetchFindScans() {
-  const res = await fetch(`${BASE}/find/scans`);
-  return res.json();
+  return authedJSON(`${BASE}/find/scans`);
 }
 
 export async function fetchFindTargets(id: string) {
-  const res = await fetch(`${BASE}/find/${id}/targets`);
+  return authedJSON(`${BASE}/find/${id}/targets`);
+}
+
+export async function startDeepSearch(category: string, tlds: string[], vulnTypes: string[]) {
+  const res = await authedFetch(`${BASE}/find/deepsearch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ category, tlds, vuln_types: vulnTypes }),
+  });
   return res.json();
 }

@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import Image from "next/image";
+import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { ArrowRightStartOnRectangleIcon, SunIcon, MoonIcon } from "@heroicons/react/24/outline";
-import { logout } from "@/lib/auth";
+import { logout, getUser, type AuthUser } from "@/lib/auth";
 import { useTheme } from "@/components/theme-provider";
 
 const navItems = [
@@ -20,11 +21,16 @@ export function Header() {
   const pathname = usePathname();
   const router = useRouter();
   const { theme, toggle } = useTheme();
+  const [user, setUser] = useState<AuthUser | null>(null);
+
+  useEffect(() => { setUser(getUser()); }, []);
 
   const handleLogout = () => {
     logout();
     router.replace("/login");
   };
+
+  const initial = (user?.username || "u").charAt(0).toUpperCase();
 
   return (
     <header className="fixed top-0 z-50 h-14 w-full border-b border-zinc-800 bg-zinc-900">
@@ -60,11 +66,11 @@ export function Header() {
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-2 rounded border border-zinc-800 bg-zinc-800 px-2.5 py-1.5">
             <div className="flex h-6 w-6 items-center justify-center rounded bg-fuchsia-800 text-[10px] font-bold text-fuchsia-200">
-              U
+              {initial}
             </div>
             <div className="hidden sm:block">
-              <p className="text-xs font-semibold text-zinc-300">root@unixcorn</p>
-              <p className="text-[10px] text-zinc-600">Administrator</p>
+              <p className="text-xs font-semibold text-zinc-300">{user?.username || "guest"}@unixcorn</p>
+              <p className="text-[10px] text-zinc-600">user #{user?.user_id ?? "—"}</p>
             </div>
           </div>
           <button

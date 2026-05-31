@@ -74,8 +74,19 @@ func main() {
 		api.WSHandler(c.Writer, c.Request)
 	})
 
-	v1 := r.Group("/api")
+	// Public auth routes
+	pub := r.Group("/api")
 	{
+		pub.POST("/auth/register", api.Register)
+		pub.POST("/auth/login", api.Login)
+	}
+
+	// Protected routes — require Bearer JWT
+	v1 := r.Group("/api")
+	v1.Use(api.AuthMiddleware())
+	{
+		v1.GET("/auth/me", api.Me)
+
 		v1.POST("/recon/start", api.StartRecon)
 		v1.POST("/recon/:id/stop", api.StopRecon)
 		v1.GET("/recon", api.ListScans)

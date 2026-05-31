@@ -894,10 +894,11 @@ func DeepSearch(c *gin.Context) {
 	scanID := uuid.New().String()
 	now := time.Now().UTC().Format(time.RFC3339)
 
+	uid := UserIDFromContext(c)
 	db.DB.Exec(
-		`INSERT INTO find_scans (id, category, tlds, vuln_types, status, total, finished_at)
-		 VALUES (?, ?, ?, ?, 'completed', ?, ?)`,
-		scanID, req.Category, string(tldsJSON), string(vulnsJSON), len(targets), now,
+		`INSERT INTO find_scans (id, category, tlds, vuln_types, status, total, finished_at, user_id)
+		 VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)`,
+		scanID, req.Category, string(tldsJSON), string(vulnsJSON), len(targets), now, uid,
 	)
 
 	for _, t := range targets {
@@ -927,9 +928,11 @@ func DeepSearch(c *gin.Context) {
 }
 
 func ListFindScans(c *gin.Context) {
+	uid := UserIDFromContext(c)
 	rows, err := db.DB.Query(
 		`SELECT id, category, tlds, vuln_types, status, total, created_at, finished_at
-		 FROM find_scans ORDER BY created_at DESC LIMIT 50`,
+		 FROM find_scans WHERE user_id = ? ORDER BY created_at DESC LIMIT 50`,
+		uid,
 	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -963,6 +966,12 @@ func ListFindScans(c *gin.Context) {
 
 func GetFindTargets(c *gin.Context) {
 	id := c.Param("id")
+	uid := UserIDFromContext(c)
+	var owner int64
+	if db.DB.QueryRow("SELECT user_id FROM find_scans WHERE id = ?", id).Scan(&owner) != nil || owner != uid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
 	rows, err := db.DB.Query(
 		`SELECT id, domain, category, indicator, source, status,
 		        COALESCE(status_code,0), COALESCE(title,''), COALESCE(tech,''),

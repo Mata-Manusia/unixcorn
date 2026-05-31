@@ -37,6 +37,9 @@ func Init(path string) error {
 		"ALTER TABLE find_targets ADD COLUMN tests TEXT DEFAULT ''",
 		"ALTER TABLE find_targets ADD COLUMN offline_reason TEXT DEFAULT ''",
 		"ALTER TABLE find_targets ADD COLUMN match_reason TEXT DEFAULT ''",
+		"ALTER TABLE scans ADD COLUMN user_id INTEGER DEFAULT 0",
+		"ALTER TABLE exploit_scans ADD COLUMN user_id INTEGER DEFAULT 0",
+		"ALTER TABLE find_scans ADD COLUMN user_id INTEGER DEFAULT 0",
 		"ALTER TABLE exploit_vulns ADD COLUMN evidence TEXT DEFAULT ''",
 		"ALTER TABLE exploit_vulns ADD COLUMN impact TEXT DEFAULT ''",
 		"ALTER TABLE exploit_vulns ADD COLUMN cwe TEXT DEFAULT ''",
@@ -55,6 +58,13 @@ func Init(path string) error {
 
 func migrate() error {
 	schema := `
+	CREATE TABLE IF NOT EXISTS users (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		username      TEXT NOT NULL UNIQUE,
+		password_hash TEXT NOT NULL,
+		created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
 	CREATE TABLE IF NOT EXISTS scans (
 		id          TEXT PRIMARY KEY,
 		target      TEXT NOT NULL,

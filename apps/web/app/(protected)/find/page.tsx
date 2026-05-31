@@ -10,7 +10,7 @@ import {
   ChevronDownIcon,
   ShieldExclamationIcon,
 } from "@heroicons/react/24/outline";
-import { fetchFindScans, fetchFindTargets } from "@/lib/api";
+import { fetchFindScans, fetchFindTargets, startDeepSearch } from "@/lib/api";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1017,13 +1017,8 @@ export default function FindPage() {
     setDeepProgress("Querying crt.sh + probing targets…");
     setResults([]);
     try {
-      const res = await fetch("http://localhost:8080/api/find/deepsearch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ category, tlds, vuln_types: selectedVulns }),
-      });
-      if (!res.ok) throw new Error(`daemon HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await startDeepSearch(category, tlds, selectedVulns);
+      if (data.error) throw new Error(data.error);
       setResults(data.targets ?? []);
       setActiveScanId(data.scan_id ?? null);
       const errs: string[] = data.errors ?? [];
