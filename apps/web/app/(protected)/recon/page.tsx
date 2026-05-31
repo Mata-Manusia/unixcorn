@@ -10,55 +10,106 @@ import { startScan, fetchScans, fetchLogs, fetchScanResults, stopScan } from "@/
 import { connectWS } from "@/lib/ws";
 import { ScanResultsTable } from "@/components/recon/scan-results-table";
 
-const AVAILABLE_TOOLS = ["subfinder", "httpx", "naabu", "nuclei", "gowitness"];
+const AVAILABLE_TOOLS = ["subfinder", "httpx", "naabu", "nuclei"];
+const NUCLEI_TAGS = [
+  { id: "cve",           label: "CVE",            desc: "Known CVEs", hot: true },
+  { id: "kev",           label: "CISA KEV",       desc: "Actively exploited", hot: true },
+  { id: "0day",          label: "0-Day",          desc: "Unpatched / fresh", hot: true },
+  { id: "exposure",      label: "Exposures",      desc: ".env, .git, configs" },
+  { id: "misconfig",     label: "Misconfig",      desc: "Default settings" },
+  { id: "default-login", label: "Default Login",  desc: "admin:admin, etc." },
+  { id: "takeover",      label: "Takeover",       desc: "Subdomain takeover" },
+  { id: "oast",          label: "OAST",           desc: "Out-of-band callbacks" },
+  { id: "intrusive",     label: "Intrusive",      desc: "Active exploitation" },
+];
+const SEVERITY_LEVELS = ["critical", "high", "medium", "low", "info"];
+
+const SEV_BADGE: Record<string, string> = {
+  critical: "bg-red-950 text-red-400 border-red-800",
+  high:     "bg-orange-950 text-orange-400 border-orange-800",
+  medium:   "bg-yellow-950 text-yellow-400 border-yellow-800",
+  low:      "bg-zinc-800 text-zinc-400 border-zinc-700",
+  info:     "bg-blue-950 text-blue-400 border-blue-800",
+};
 
 interface ScanLog { id: number; scan_id: string; level: string; message: string; timestamp: string }
 interface ScanResult { id: number; tool: string; type: string; result?: string; raw_output?: string }
 interface ToolStatus { tool: string; status: "ok" | "failed" | "pending"; reason?: string; found: number }
+interface VulnRow {
+  severity: string;
+  cve: string;
+  name: string;
+  host: string;
+  raw: string;
+  templateId?: string;
+}
 interface DiscoveredAssets {
-  subdomains: string[]; liveHosts: string[]; openPorts: string[]; vulnFindings: string[];
+  subdomains: string[]; liveHosts: string[]; openPorts: string[]; vulns: VulnRow[];
 }
 
 function parseToolStatus(logs: ScanLog[], tools: string[]): ToolStatus[] {
   return tools.map((tool) => {
     const toolLogs = logs.filter((l) => l.message.toLowerCase().includes(tool));
-    const failed = toolLogs.find((l) => l.message.includes("executable file not found") || l.message.includes("failed"));
-    if (failed) return { tool, status: "failed", reason: "not installed", found: 0 };
-    const hasOutput = logs.filter((l) => l.level !== "error" && l.message.length > 10).length > 0;
-    if (hasOutput) return { tool, status: "ok", found: 0 };
+    // Failure markers from backend resolveTool / runtime
+    const notInstalled = toolLogs.find((l) =>
+      l.message.includes(`${tool} not installed`) ||
+      l.message.includes("executable file not found") ||
+      l.message.includes(`not ProjectDiscovery's ${tool}`)
+    );
+    if (notInstalled) return { tool, status: "failed", reason: "not installed / wrong binary", found: 0 };
+    // Stage start marker
+    const started = toolLogs.find((l) => l.message.includes(`Stage `) && l.message.includes(tool));
+    if (started) return { tool, status: "ok", found: 0 };
     return { tool, status: "pending", found: 0 };
   });
 }
 
-function parseDiscovered(logs: ScanLog[], results: ScanResult[]): DiscoveredAssets {
-  const subdomains: string[] = [];
-  const liveHosts: string[] = [];
-  const openPorts: string[] = [];
-  const vulnFindings: string[] = [];
+function parseDiscovered(_logs: ScanLog[], results: ScanResult[]): DiscoveredAssets {
+  const subdomains = new Set<string>();
+  const liveHosts = new Set<string>();
+  const openPorts = new Set<string>();
+  const vulns: VulnRow[] = [];
 
   for (const r of results) {
-    if (r.tool === "subfinder") subdomains.push(r.result ?? r.raw_output ?? "");
-    else if (r.tool === "httpx") liveHosts.push(r.result ?? r.raw_output ?? "");
-    else if (r.tool === "naabu") openPorts.push(r.result ?? r.raw_output ?? "");
-    else if (r.tool === "nuclei") vulnFindings.push(r.result ?? r.raw_output ?? "");
+    const v = r.result ?? r.raw_output ?? "";
+    if (!v) continue;
+    if (r.type === "subdomain" || r.tool === "subfinder") subdomains.add(v);
+    else if (r.type === "host" || r.tool === "httpx") liveHosts.add(v);
+    else if (r.type === "port" || r.tool === "naabu") openPorts.add(v);
+    else if (r.type === "vuln" || r.tool === "nuclei") {
+      // Parse JSONL nuclei output stored in raw_output for structured fields
+      let severity = "info", cve = "", name = v, host = "", templateId = "";
+      try {
+        const j = JSON.parse(r.raw_output || "");
+        const info = j.info || {};
+        severity = (info.severity || "info").toLowerCase();
+        name = info.name || v;
+        templateId = j["template-id"] || "";
+        host = j["matched-at"] || j.host || "";
+        const cls = info.classification || {};
+        if (Array.isArray(cls["cve-id"]) && cls["cve-id"].length) cve = cls["cve-id"][0];
+      } catch {
+        // Fallback: regex parse summary string `[SEV] CVE-XXX [NAME] — HOST`
+        const sev = v.match(/^\[(critical|high|medium|low|info)\]/i);
+        if (sev) severity = sev[1].toLowerCase();
+        const cveMatch = v.match(/CVE-\d{4}-\d{4,}/i);
+        if (cveMatch) cve = cveMatch[0];
+        const hostMatch = v.match(/—\s*(https?:\/\/\S+)/);
+        if (hostMatch) host = hostMatch[1];
+      }
+      vulns.push({ severity, cve, name, host, raw: r.raw_output || v, templateId });
+    }
   }
 
-  for (const l of logs) {
-    const msg = l.message;
-    if (/^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(msg.trim())) openPorts.push(msg.trim());
-    else if (/^https?:\/\//.test(msg.trim()) && l.level !== "error") {
-      if (!liveHosts.includes(msg.trim())) liveHosts.push(msg.trim());
-    }
-    else if (/^\[.*\]/.test(msg) && msg.toLowerCase().includes("critical") || msg.toLowerCase().includes("[high]")) {
-      vulnFindings.push(msg);
-    }
-  }
+  // Sort vulns by severity
+  const order: Record<string, number> = { critical: 1, high: 2, medium: 3, low: 4, info: 5 };
+  vulns.sort((a, b) => (order[a.severity] || 9) - (order[b.severity] || 9));
 
   return {
-    subdomains: [...new Set(subdomains)].filter(Boolean),
-    liveHosts:  [...new Set(liveHosts)].filter(Boolean),
-    openPorts:  [...new Set(openPorts)].filter(Boolean),
-    vulnFindings: [...new Set(vulnFindings)].filter(Boolean),
+    subdomains: [...subdomains].filter(Boolean),
+    liveHosts:  [...liveHosts].filter(Boolean),
+    openPorts:  [...openPorts].filter(Boolean),
+    vulns,
   };
 }
 
@@ -88,11 +139,83 @@ function AssetList({ title, items, accent }: { title: string; items: string[]; a
   );
 }
 
+function VulnFindings({ vulns, sevCounts }: { vulns: VulnRow[]; sevCounts: Record<string, number> }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="rounded border border-red-900 overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 bg-zinc-900 px-3 py-1.5 hover:bg-zinc-800 text-left transition-colors"
+      >
+        <span className="rounded bg-red-950 border border-red-800 px-1.5 py-0.5 text-[10px] font-bold text-red-400">
+          {vulns.length}
+        </span>
+        <span className="text-xs font-medium text-zinc-300">Vulnerabilities (nuclei)</span>
+        <div className="ml-auto flex gap-1">
+          {Object.entries(sevCounts).map(([sev, n]) => (
+            <span key={sev} className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase ${SEV_BADGE[sev]}`}>
+              {sev} {n}
+            </span>
+          ))}
+        </div>
+        <ChevronDownIcon className={`h-3 w-3 text-zinc-600 transition-transform ${open ? "" : "-rotate-90"}`} />
+      </button>
+      {open && (
+        <div className="max-h-96 overflow-y-auto bg-zinc-950 divide-y divide-zinc-900">
+          {vulns.map((v, i) => (
+            <div key={i} className="px-3 py-2 hover:bg-zinc-900/50">
+              <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
+                <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase ${SEV_BADGE[v.severity] || SEV_BADGE.info}`}>
+                  {v.severity}
+                </span>
+                {v.cve && (
+                  <a
+                    href={`https://www.cve.org/CVERecord?id=${v.cve}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 rounded border border-red-800 bg-red-950 px-1.5 py-0.5 text-[10px] font-mono font-bold text-red-300 hover:bg-red-900"
+                  >
+                    {v.cve}
+                  </a>
+                )}
+                {v.templateId && (
+                  <a
+                    href={`https://github.com/projectdiscovery/nuclei-templates/search?q=${encodeURIComponent(v.templateId)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 rounded border border-cyan-800 bg-cyan-950 px-1.5 py-0.5 text-[10px] font-mono text-cyan-300 hover:bg-cyan-900"
+                  >
+                    {v.templateId}
+                  </a>
+                )}
+                <span className="flex-1 truncate text-xs text-zinc-200 font-medium">{v.name}</span>
+              </div>
+              {v.host && (
+                <a
+                  href={v.host.startsWith("http") ? v.host : `https://${v.host}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block truncate font-mono text-[10px] text-fuchsia-400 hover:text-fuchsia-300 pl-1"
+                >
+                  {v.host}
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ReconPage() {
   const { scans, setScans } = useStore();
 
   const [target, setTarget] = useState("");
-  const [selectedTools, setSelectedTools] = useState<string[]>(["subfinder", "httpx"]);
+  const [selectedTools, setSelectedTools] = useState<string[]>(["subfinder", "httpx", "naabu", "nuclei"]);
+  const [selectedTags, setSelectedTags] = useState<string[]>(["cve", "kev", "exposure", "misconfig"]);
+  const [selectedSeverity, setSelectedSeverity] = useState<string[]>(["critical", "high", "medium"]);
+  const [updateTemplates, setUpdateTemplates] = useState(false);
   const [loading, setLoading] = useState(false);
   const [activeScanId, setActiveScanId] = useState<string | null>(null);
   const [scanLogs, setScanLogs] = useState<ScanLog[]>([]);
@@ -149,12 +272,20 @@ export default function ReconPage() {
 
   const toggleTool = (tool: string) =>
     setSelectedTools((prev) => prev.includes(tool) ? prev.filter((t) => t !== tool) : [...prev, tool]);
+  const toggleTag = (tag: string) =>
+    setSelectedTags((prev) => prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]);
+  const toggleSev = (sev: string) =>
+    setSelectedSeverity((prev) => prev.includes(sev) ? prev.filter((t) => t !== sev) : [...prev, sev]);
 
   const handleStart = async () => {
     if (!target.trim()) return;
     setLoading(true);
     try {
-      await startScan(target.trim(), selectedTools);
+      await startScan(target.trim(), selectedTools, {
+        nuclei_tags: selectedTags,
+        severity: selectedSeverity,
+        update_templates: updateTemplates,
+      });
       const updated = await fetchScans();
       setScans(updated);
       if (updated.length > 0) selectScan(updated[0]);
@@ -185,7 +316,12 @@ export default function ReconPage() {
   }, [scanLogs, logSearch, logLevel]);
 
   const totalDiscovered = discovered.subdomains.length + discovered.liveHosts.length +
-    discovered.openPorts.length + discovered.vulnFindings.length;
+    discovered.openPorts.length + discovered.vulns.length;
+  const sevCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const v of discovered.vulns) c[v.severity] = (c[v.severity] || 0) + 1;
+    return c;
+  }, [discovered.vulns]);
 
   const statusDot = (s: string) => ({
     running:   "bg-fuchsia-500 animate-pulse",
@@ -237,6 +373,63 @@ export default function ReconPage() {
                 ))}
               </div>
             </div>
+            {selectedTools.includes("nuclei") && (
+              <>
+                <div className="border-t border-zinc-800 pt-2">
+                  <p className="mb-1 text-[10px] uppercase tracking-wider text-zinc-600">Nuclei Templates</p>
+                  <div className="flex flex-wrap gap-1">
+                    {NUCLEI_TAGS.map((t) => {
+                      const active = selectedTags.includes(t.id);
+                      return (
+                        <button
+                          key={t.id}
+                          onClick={() => toggleTag(t.id)}
+                          title={t.desc}
+                          className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+                            active
+                              ? t.hot
+                                ? "bg-red-700 text-white"
+                                : "bg-fuchsia-700 text-white"
+                              : "bg-zinc-800 text-zinc-500 border border-zinc-700 hover:bg-zinc-700"
+                          }`}
+                        >
+                          {t.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <p className="mb-1 text-[10px] uppercase tracking-wider text-zinc-600">Severity Filter</p>
+                  <div className="flex flex-wrap gap-1">
+                    {SEVERITY_LEVELS.map((s) => {
+                      const active = selectedSeverity.includes(s);
+                      return (
+                        <button
+                          key={s}
+                          onClick={() => toggleSev(s)}
+                          className={`rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase transition-opacity ${SEV_BADGE[s]} ${active ? "" : "opacity-40 hover:opacity-100"}`}
+                        >
+                          {s}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-1.5 text-[10px] text-zinc-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={updateTemplates}
+                    onChange={(e) => setUpdateTemplates(e.target.checked)}
+                    className="accent-fuchsia-500"
+                  />
+                  Update nuclei templates first (slow, latest 0-days)
+                </label>
+              </>
+            )}
+
             <button
               onClick={handleStart}
               disabled={loading || !target.trim()}
@@ -342,17 +535,25 @@ export default function ReconPage() {
                       </div>
                     ))}
                   </div>
-                  {allToolsFailed && (
-                    <div className="border-t border-zinc-800 px-3 py-2">
-                      <p className="text-[10px] text-zinc-500 mb-1.5">Install missing tools:</p>
-                      <pre className="rounded bg-zinc-950 px-3 py-2 text-[10px] text-green-400 overflow-x-auto">{`# macOS
-brew install subfinder httpx naabu nuclei
+                  {anyToolFailed && (
+                    <div className="border-t border-zinc-800 px-3 py-2 space-y-1.5">
+                      <p className="text-[10px] text-zinc-500">Install missing tools (one-liner):</p>
+                      <pre className="rounded bg-zinc-950 px-3 py-2 text-[10px] text-green-400 overflow-x-auto">{`# macOS (recommended)
+brew install subfinder naabu nuclei
+brew install httpx-toolkit   # ProjectDiscovery httpx — avoids collision with Python httpie's httpx
 
-# go install
+# OR via Go
 go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
 go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
 go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
-go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest`}</pre>
+go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+
+# Verify (must show "projectdiscovery" in output)
+subfinder -version && httpx -version && naabu -version && nuclei -version`}</pre>
+                      <p className="text-[10px] text-yellow-500">
+                        ⚠ If `httpx -version` shows the Python httpie httpx (not ProjectDiscovery),
+                        install `httpx-toolkit` instead — the recon pipeline auto-detects + uses it.
+                      </p>
                     </div>
                   )}
                 </div>
@@ -372,10 +573,12 @@ go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest`}</pre>
                     </button>
                     {assetsOpen && (
                       <div className="bg-zinc-900 px-3 py-2 space-y-1.5">
-                        <AssetList title="Subdomains"     items={discovered.subdomains}   accent="bg-blue-950 text-blue-400 border border-blue-800" />
-                        <AssetList title="Live Hosts"     items={discovered.liveHosts}    accent="bg-green-950 text-green-400 border border-green-800" />
-                        <AssetList title="Open Ports"     items={discovered.openPorts}    accent="bg-orange-950 text-orange-400 border border-orange-800" />
-                        <AssetList title="Vulnerabilities" items={discovered.vulnFindings} accent="bg-red-950 text-red-400 border border-red-800" />
+                        <AssetList title="Subdomains"  items={discovered.subdomains}   accent="bg-blue-950 text-blue-400 border border-blue-800" />
+                        <AssetList title="Live Hosts"  items={discovered.liveHosts}    accent="bg-green-950 text-green-400 border border-green-800" />
+                        <AssetList title="Open Ports"  items={discovered.openPorts}    accent="bg-orange-950 text-orange-400 border border-orange-800" />
+                        {discovered.vulns.length > 0 && (
+                          <VulnFindings vulns={discovered.vulns} sevCounts={sevCounts} />
+                        )}
                       </div>
                     )}
                   </div>

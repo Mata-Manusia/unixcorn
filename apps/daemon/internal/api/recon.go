@@ -28,8 +28,11 @@ func StopRecon(c *gin.Context) {
 }
 
 type StartReconRequest struct {
-	Target string   `json:"target" binding:"required"`
-	Tools  []string `json:"tools"`
+	Target     string   `json:"target" binding:"required"`
+	Tools      []string `json:"tools"`
+	NucleiTags []string `json:"nuclei_tags"`
+	Severity   []string `json:"severity"`
+	UpdateTpl  bool     `json:"update_templates"`
 }
 
 var queue *worker.Queue
@@ -58,7 +61,10 @@ func StartRecon(c *gin.Context) {
 		return
 	}
 
-	queue.Enqueue(worker.Job{ID: id, Type: "recon", Target: req.Target, Tools: req.Tools})
+	queue.Enqueue(worker.Job{
+		ID: id, Type: "recon", Target: req.Target, Tools: req.Tools,
+		NucleiTags: req.NucleiTags, Severity: req.Severity, UpdateTpl: req.UpdateTpl,
+	})
 
 	Broadcast(WSEvent{Type: "scan.started", ScanID: id, Message: "Scan started for " + req.Target})
 

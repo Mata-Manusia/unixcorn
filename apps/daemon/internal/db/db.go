@@ -48,6 +48,9 @@ func Init(path string) error {
 		"ALTER TABLE exploit_vulns ADD COLUMN refs TEXT DEFAULT ''",
 		"ALTER TABLE exploit_vulns ADD COLUMN attack_chain TEXT DEFAULT ''",
 		"ALTER TABLE exploit_vulns ADD COLUMN exploit_code TEXT DEFAULT ''",
+		"ALTER TABLE exploit_vulns ADD COLUMN nuclei TEXT DEFAULT ''",
+		"ALTER TABLE exploit_vulns ADD COLUMN exploit_hint TEXT DEFAULT ''",
+		"ALTER TABLE exploit_vulns ADD COLUMN cves TEXT DEFAULT ''",
 	} {
 		DB.Exec(col) // ignore error — column may already exist
 	}

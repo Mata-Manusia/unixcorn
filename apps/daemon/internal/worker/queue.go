@@ -7,10 +7,13 @@ import (
 )
 
 type Job struct {
-	ID     string
-	Type   string
-	Target string
-	Tools  []string
+	ID         string
+	Type       string
+	Target     string
+	Tools      []string
+	NucleiTags []string // cves, kev, exposures, misconfig, default-logins, oast, takeovers, etc.
+	Severity   []string // critical, high, medium
+	UpdateTpl  bool     // run `nuclei -update-templates` before scan
 }
 
 type Queue struct {

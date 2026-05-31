@@ -17,37 +17,44 @@ func main() {
 		log.Fatal("[db] init failed:", err)
 	}
 
-	runtime := plugin.NewRuntime(func(out plugin.OutputLine) {
-		level := "info"
-		if out.IsError {
-			level = "error"
-		}
-		db.DB.Exec(
-			"INSERT INTO logs (scan_id, level, message) VALUES (?, ?, ?)",
-			out.ScanID, level, out.Line,
-		)
-		api.Broadcast(api.WSEvent{
-			Type:    "scan.log",
-			ScanID:  out.ScanID,
-			Tool:    out.Tool,
-			Message: out.Line,
-		})
-	})
+	_ = plugin.NewRuntime(nil) // legacy runtime kept for plugin handlers; recon uses ReconPipeline
 
 	q := worker.NewQueue(4, func(ctx context.Context, job worker.Job) {
-		api.Broadcast(api.WSEvent{Type: "scan.progress", ScanID: job.ID, Message: "Running tools..."})
-		for _, tool := range job.Tools {
-			select {
-			case <-ctx.Done():
-				log.Printf("[worker] job %s cancelled", job.ID)
-				return
-			default:
-			}
-			if err := runtime.RunContext(ctx, job.ID, tool, []string{job.Target}); err != nil {
-				log.Printf("[worker] tool %s failed: %v", tool, err)
-			}
-		}
-		// Only mark completed if not already stopped
+		api.Broadcast(api.WSEvent{Type: "scan.progress", ScanID: job.ID, Message: "Running recon pipeline..."})
+
+		pipe := plugin.NewReconPipeline(
+			func(ev plugin.PipelineEvent) {
+				// Persist structured result row
+				db.DB.Exec(
+					"INSERT INTO scan_results (scan_id, tool, type, result, raw_output) VALUES (?, ?, ?, ?, ?)",
+					job.ID, ev.Tool, ev.Type, ev.Result, ev.RawOutput,
+				)
+				api.Broadcast(api.WSEvent{
+					Type:    "scan.result",
+					ScanID:  job.ID,
+					Tool:    ev.Tool,
+					Message: ev.Result,
+				})
+			},
+			func(level, line string) {
+				db.DB.Exec(
+					"INSERT INTO logs (scan_id, level, message) VALUES (?, ?, ?)",
+					job.ID, level, line,
+				)
+				api.Broadcast(api.WSEvent{
+					Type: "scan.log", ScanID: job.ID, Message: line,
+				})
+			},
+		)
+		pipe.Run(ctx, plugin.PipelineRequest{
+			ScanID:     job.ID,
+			Target:     job.Target,
+			Tools:      job.Tools,
+			NucleiTags: job.NucleiTags,
+			Severity:   job.Severity,
+			UpdateTpl:  job.UpdateTpl,
+		})
+
 		var status string
 		db.DB.QueryRow("SELECT status FROM scans WHERE id=?", job.ID).Scan(&status)
 		if status != "stopped" {

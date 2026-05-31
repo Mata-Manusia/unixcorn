@@ -26,11 +26,15 @@ export async function fetchScans() {
   return authedJSON(`${BASE}/recon`);
 }
 
-export async function startScan(target: string, tools?: string[]) {
+export async function startScan(
+  target: string,
+  tools?: string[],
+  opts?: { nuclei_tags?: string[]; severity?: string[]; update_templates?: boolean }
+) {
   return authedJSON(`${BASE}/recon/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target, tools }),
+    body: JSON.stringify({ target, tools, ...(opts || {}) }),
   });
 }
 

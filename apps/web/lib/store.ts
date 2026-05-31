@@ -43,6 +43,7 @@ export interface ExploitVuln {
   description?: string;
   poc?: string;
   cve?: string;
+  cves?: string[];        // multiple CVE IDs
   cvss?: string;
   evidence?: string;
   impact?: string;
@@ -52,6 +53,8 @@ export interface ExploitVuln {
   refs?: string;          // JSON string of string[]
   attack_chain?: string;  // JSON string of AttackChainStep[]
   exploit_code?: string;  // JSON string of ExploitCode
+  nuclei?: string;        // nuclei template path
+  exploit_hint?: string;  // one-line exploit technique
   timestamp: string;
 }
 
