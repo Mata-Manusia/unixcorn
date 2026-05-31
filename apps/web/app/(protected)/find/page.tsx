@@ -35,6 +35,10 @@ interface TargetFinding {
   evidence?: string;
   description?: string;
   url?: string;
+  cves?: string[];
+  nuclei?: string;
+  references?: string[];
+  exploit_hint?: string;
 }
 
 interface ProbeTest {
@@ -240,10 +244,64 @@ function FindingRow({ f, targetURL }: { f: TargetFinding; targetURL: string }) {
           <ArrowTopRightOnSquareIcon className="h-3 w-3" />
         </a>
       </div>
-      {(f.description || f.evidence) && (
-        <div className="space-y-1 px-3 pb-2 pl-12">
+      {(f.description || f.evidence || f.exploit_hint || (f.cves && f.cves.length > 0) || f.nuclei) && (
+        <div className="space-y-1.5 px-3 pb-2 pl-12">
           {f.description && (
             <p className="text-[11px] text-zinc-400">{f.description}</p>
+          )}
+          {f.exploit_hint && (
+            <div className="rounded border border-fuchsia-900 bg-fuchsia-950/30 px-2 py-1.5">
+              <span className="text-[9px] uppercase tracking-wider text-fuchsia-500">Exploit hint</span>
+              <p className="text-[11px] text-fuchsia-200 mt-0.5">{f.exploit_hint}</p>
+            </div>
+          )}
+          {(f.cves?.length || f.nuclei) && (
+            <div className="flex flex-wrap gap-1.5 items-center">
+              {f.cves?.map((cve) => (
+                <a
+                  key={cve}
+                  href={`https://www.cve.org/CVERecord?id=${cve}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded border border-red-800 bg-red-950 px-1.5 py-0.5 text-[10px] font-mono font-bold text-red-300 hover:bg-red-900 transition-colors"
+                >
+                  {cve}
+                </a>
+              ))}
+              {f.nuclei && (
+                <a
+                  href={`https://github.com/projectdiscovery/nuclei-templates/tree/main/http/${f.nuclei}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded border border-cyan-800 bg-cyan-950 px-1.5 py-0.5 text-[10px] font-mono text-cyan-300 hover:bg-cyan-900 transition-colors"
+                >
+                  nuclei: {f.nuclei}
+                </a>
+              )}
+            </div>
+          )}
+          {f.references && f.references.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {f.references.map((u) => {
+                const label =
+                  u.includes("cve.org") ? "cve.org search" :
+                  u.includes("exploit-db") ? "exploit-db" :
+                  u.includes("nuclei-templates") ? "nuclei template" :
+                  u.includes("github") ? "github" :
+                  new URL(u).hostname;
+                return (
+                  <a
+                    key={u}
+                    href={u}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:text-zinc-200 transition-colors"
+                  >
+                    ↗ {label}
+                  </a>
+                );
+              })}
+            </div>
           )}
           {f.evidence && (
             <pre className="rounded border border-zinc-800 bg-zinc-950 px-2 py-1 font-mono text-[10px] text-amber-300 overflow-x-auto whitespace-pre-wrap break-all max-h-32">
@@ -252,6 +310,176 @@ function FindingRow({ f, targetURL }: { f: TargetFinding; targetURL: string }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+interface FlatFinding extends TargetFinding {
+  domain: string;
+  fullURL: string;
+}
+
+function flattenFindings(results: FoundTarget[]): FlatFinding[] {
+  const out: FlatFinding[] = [];
+  for (const r of results) {
+    const base = r.final_url || `https://${r.domain}`;
+    for (const f of (r.findings || [])) {
+      out.push({
+        ...f,
+        domain: r.domain,
+        fullURL: f.url || `${base.replace(/\/$/, "")}${f.path}`,
+      });
+    }
+  }
+  return out.sort((a, b) => (SEV_ORDER[a.severity] || 9) - (SEV_ORDER[b.severity] || 9));
+}
+
+function FlatUrlView({ findings }: { findings: FlatFinding[] }) {
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+  if (findings.length === 0) {
+    return <p className="px-3 py-6 text-[11px] text-zinc-600">No exploitable URLs found. Enable vuln types and re-run DeepSearch.</p>;
+  }
+  return (
+    <div className="overflow-hidden rounded border border-zinc-800 bg-zinc-900">
+      {findings.map((f, i) => {
+        const open = expanded[i];
+        return (
+          <div key={i} className={`border-b border-zinc-800/60 last:border-b-0 border-l-2 ${
+            f.severity === "critical" ? "border-l-red-600" :
+            f.severity === "high"     ? "border-l-orange-500" :
+            f.severity === "medium"   ? "border-l-yellow-500" :
+            f.severity === "low"      ? "border-l-zinc-600" : "border-l-blue-600"
+          }`}>
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setExpanded((p) => ({ ...p, [i]: !p[i] }))}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpanded((p) => ({ ...p, [i]: !p[i] })); } }}
+              className="flex items-center gap-2 px-3 py-2 hover:bg-zinc-800/40 cursor-pointer"
+            >
+              <ChevronDownIcon className={`h-3 w-3 shrink-0 text-zinc-600 transition-transform ${open ? "" : "-rotate-90"}`} />
+              <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${SEV_BADGE[f.severity] || SEV_BADGE.info}`}>
+                {f.severity}
+              </span>
+              <span className="shrink-0 rounded border border-zinc-700 bg-zinc-800 px-1.5 py-0.5 text-[9px] uppercase text-zinc-400">
+                {VULN_TYPE_LABEL[f.type] || f.type}
+              </span>
+              {f.status_code != null && f.status_code > 0 && (
+                <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-mono font-bold ${
+                  f.status_code < 300 ? "bg-green-950 text-green-400 border border-green-800"
+                  : f.status_code < 400 ? "bg-blue-950 text-blue-400 border border-blue-800"
+                  : f.status_code < 500 ? "bg-yellow-950 text-yellow-500 border border-yellow-800"
+                  : "bg-red-950 text-red-400 border border-red-800"
+                }`}>{f.status_code}</span>
+              )}
+              <a
+                href={f.fullURL}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="font-mono text-[11px] text-zinc-200 hover:text-fuchsia-400 truncate flex-1"
+              >
+                {f.fullURL}
+              </a>
+              {f.cves && f.cves.length > 0 && (
+                <span className="shrink-0 rounded border border-red-800 bg-red-950 px-1.5 py-0.5 text-[9px] font-mono font-bold text-red-300">
+                  {f.cves[0]}{f.cves.length > 1 ? ` +${f.cves.length - 1}` : ""}
+                </span>
+              )}
+              {f.nuclei && (
+                <span className="shrink-0 rounded border border-cyan-800 bg-cyan-950 px-1.5 py-0.5 text-[9px] font-mono text-cyan-300">
+                  nuclei
+                </span>
+              )}
+              <div className="shrink-0 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                <CopyBtn text={f.fullURL} />
+                <a
+                  href={f.fullURL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center rounded border border-zinc-700 bg-zinc-800 p-1 text-zinc-500 hover:text-zinc-300"
+                >
+                  <ArrowTopRightOnSquareIcon className="h-3 w-3" />
+                </a>
+              </div>
+            </div>
+
+            {open && (
+              <div className="border-t border-zinc-800 bg-zinc-950/40 px-3 py-2 pl-12 space-y-2">
+                <p className="text-[11px] text-zinc-300">{f.title}</p>
+                {f.description && <p className="text-[11px] text-zinc-500">{f.description}</p>}
+                {f.exploit_hint && (
+                  <div className="rounded border border-fuchsia-900 bg-fuchsia-950/30 px-2 py-1.5">
+                    <span className="text-[9px] uppercase tracking-wider text-fuchsia-500">Exploit technique</span>
+                    <p className="text-[11px] text-fuchsia-200 mt-0.5">{f.exploit_hint}</p>
+                  </div>
+                )}
+                {(f.cves?.length || f.nuclei) && (
+                  <div>
+                    <p className="text-[9px] uppercase tracking-wider text-zinc-500 mb-1">CVE templates</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {f.cves?.map((cve) => (
+                        <a
+                          key={cve}
+                          href={`https://www.cve.org/CVERecord?id=${cve}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="rounded border border-red-800 bg-red-950 px-2 py-0.5 text-[10px] font-mono font-bold text-red-300 hover:bg-red-900 transition-colors"
+                        >
+                          {cve}
+                        </a>
+                      ))}
+                      {f.nuclei && (
+                        <a
+                          href={`https://github.com/projectdiscovery/nuclei-templates/tree/main/http/${f.nuclei}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="rounded border border-cyan-800 bg-cyan-950 px-2 py-0.5 text-[10px] font-mono text-cyan-300 hover:bg-cyan-900 transition-colors"
+                        >
+                          nuclei: {f.nuclei}
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {f.references && f.references.length > 0 && (
+                  <div>
+                    <p className="text-[9px] uppercase tracking-wider text-zinc-500 mb-1">References</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {f.references.map((u) => {
+                        let label = u;
+                        try { label = u.includes("cve.org") ? "cve.org search" : u.includes("exploit-db") ? "exploit-db" : u.includes("nuclei-templates") ? "nuclei template" : new URL(u).hostname; } catch { /* keep raw */ }
+                        return (
+                          <a
+                            key={u}
+                            href={u}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="rounded border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400 hover:text-zinc-200"
+                          >
+                            ↗ {label}
+                          </a>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                {f.evidence && (
+                  <div>
+                    <p className="text-[9px] uppercase tracking-wider text-zinc-500 mb-1">Evidence</p>
+                    <pre className="rounded border border-zinc-800 bg-zinc-950 px-2 py-1 font-mono text-[10px] text-amber-300 overflow-x-auto whitespace-pre-wrap break-all max-h-40">
+                      {f.evidence}
+                    </pre>
+                  </div>
+                )}
+                <p className="text-[10px] text-zinc-700">
+                  Source domain: <span className="font-mono text-zinc-500">{f.domain}</span>
+                </p>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -537,6 +765,16 @@ function ResultsView({ results, activeScanId }: { results: FoundTarget[]; active
   const [sevFilter, setSevFilter] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [onlyWithFindings, setOnlyWithFindings] = useState(false);
+  const [viewMode, setViewMode] = useState<"urls" | "domains">("urls");
+
+  const flatFindings = useMemo(() => {
+    const all = flattenFindings(results);
+    return all.filter((f) => {
+      if (sevFilter && f.severity !== sevFilter) return false;
+      if (typeFilter && f.type !== typeFilter) return false;
+      return true;
+    });
+  }, [results, sevFilter, typeFilter]);
 
   const filtered = useMemo(() => {
     return results.filter((r) => {
@@ -647,13 +885,39 @@ function ResultsView({ results, activeScanId }: { results: FoundTarget[]; active
         </div>
       )}
 
-      {/* Targets */}
-      <div className="overflow-hidden rounded border border-zinc-800">
-        {filtered.map((r, i) => <TargetRow key={i} r={r} />)}
-        {filtered.length === 0 && (
-          <p className="px-3 py-4 text-[11px] text-zinc-600">No targets match the current filter.</p>
-        )}
+      {/* View mode toggle */}
+      <div className="flex items-center gap-2">
+        <div className="flex gap-0.5 rounded bg-zinc-900 p-0.5 border border-zinc-800">
+          <button
+            onClick={() => setViewMode("urls")}
+            className={`rounded px-3 py-1 text-[10px] font-semibold uppercase transition-colors ${
+              viewMode === "urls" ? "bg-fuchsia-700 text-white" : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >Exploitable URLs ({flatFindings.length})</button>
+          <button
+            onClick={() => setViewMode("domains")}
+            className={`rounded px-3 py-1 text-[10px] font-semibold uppercase transition-colors ${
+              viewMode === "domains" ? "bg-fuchsia-700 text-white" : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >By Domain ({filtered.length})</button>
+        </div>
+        <span className="text-[10px] text-zinc-600">
+          {viewMode === "urls"
+            ? "flat list of every vulnerable URL — Google-dork style"
+            : "grouped by target — full per-target intel + probe log"}
+        </span>
       </div>
+
+      {viewMode === "urls" ? (
+        <FlatUrlView findings={flatFindings} />
+      ) : (
+        <div className="overflow-hidden rounded border border-zinc-800">
+          {filtered.map((r, i) => <TargetRow key={i} r={r} />)}
+          {filtered.length === 0 && (
+            <p className="px-3 py-4 text-[11px] text-zinc-600">No targets match the current filter.</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
