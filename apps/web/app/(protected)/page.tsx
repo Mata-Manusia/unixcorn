@@ -5,7 +5,7 @@ import Link from "next/link";
 import {
   MagnifyingGlassIcon, BoltIcon, GlobeAltIcon, DocumentTextIcon,
   WrenchScrewdriverIcon, ServerStackIcon, ShieldExclamationIcon,
-  ArrowTopRightOnSquareIcon, ClockIcon, SignalIcon,
+  ArrowTopRightOnSquareIcon, ClockIcon, SignalIcon, SparklesIcon,
 } from "@heroicons/react/24/outline";
 import { useStore } from "@/lib/store";
 import { connectWS } from "@/lib/ws";
@@ -135,6 +135,11 @@ export default function DashboardPage() {
       href: "/logs",   icon: DocumentTextIcon, label: "Logs",
       desc: "Stream all scan stdout/stderr",
       count: null, color: "text-amber-400",
+    },
+    {
+      href: "/automation", icon: SparklesIcon, label: "Automation",
+      desc: "AI agent · auto pentest · chat",
+      count: null, color: "text-emerald-400",
     },
     {
       href: "/tools",  icon: WrenchScrewdriverIcon, label: "Tools",

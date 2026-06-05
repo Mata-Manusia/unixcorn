@@ -66,19 +66,19 @@ func Register(c *gin.Context) {
 		return
 	}
 
-	res, err := db.DB.Exec(
-		`INSERT INTO users (username, password_hash) VALUES (?, ?)`,
+	var uid int64
+	err = db.DB.QueryRow(
+		`INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id`,
 		username, string(hash),
-	)
+	).Scan(&uid)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			c.JSON(http.StatusConflict, gin.H{"error": "username taken"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	uid, _ := res.LastInsertId()
 	token, err := issueToken(uid, username)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -104,7 +104,7 @@ func Login(c *gin.Context) {
 		hash string
 	)
 	err := db.DB.QueryRow(
-		`SELECT id, password_hash FROM users WHERE username = ?`, username,
+		`SELECT id, password_hash FROM users WHERE username = $1`, username,
 	).Scan(&id, &hash)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})

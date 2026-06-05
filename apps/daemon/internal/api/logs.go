@@ -20,9 +20,9 @@ func GetLogs(c *gin.Context) {
 		// Verify the requested scan belongs to this user (recon OR exploit).
 		var owner int64
 		err = db.DB.QueryRow(
-			`SELECT user_id FROM scans WHERE id = ?
+			`SELECT user_id FROM scans WHERE id = $1
 			 UNION
-			 SELECT user_id FROM exploit_scans WHERE id = ?
+			 SELECT user_id FROM exploit_scans WHERE id = $2
 			 LIMIT 1`,
 			scanID, scanID,
 		).Scan(&owner)
@@ -31,7 +31,7 @@ func GetLogs(c *gin.Context) {
 			return
 		}
 		rows, err = db.DB.Query(
-			"SELECT id, scan_id, level, message, timestamp FROM logs WHERE scan_id = ? ORDER BY timestamp DESC LIMIT 500",
+			"SELECT id, scan_id, level, message, timestamp FROM logs WHERE scan_id = $1 ORDER BY timestamp DESC LIMIT 500",
 			scanID,
 		)
 	} else {
@@ -40,9 +40,9 @@ func GetLogs(c *gin.Context) {
 			`SELECT l.id, l.scan_id, l.level, l.message, l.timestamp
 			 FROM logs l
 			 WHERE l.scan_id IN (
-			   SELECT id FROM scans         WHERE user_id = ?
+			   SELECT id FROM scans         WHERE user_id = $1
 			   UNION
-			   SELECT id FROM exploit_scans WHERE user_id = ?
+			   SELECT id FROM exploit_scans WHERE user_id = $2
 			 )
 			 ORDER BY l.timestamp DESC
 			 LIMIT 500`,

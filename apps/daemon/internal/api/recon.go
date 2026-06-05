@@ -14,13 +14,13 @@ func StopRecon(c *gin.Context) {
 	id := c.Param("id")
 	uid := UserIDFromContext(c)
 	var owner int64
-	if db.DB.QueryRow("SELECT user_id FROM scans WHERE id = ?", id).Scan(&owner) != nil || owner != uid {
+	if db.DB.QueryRow("SELECT user_id FROM scans WHERE id = $1", id).Scan(&owner) != nil || owner != uid {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
 	queue.Cancel(id)
 	db.DB.Exec(
-		"UPDATE scans SET status='stopped', finished_at=? WHERE id=?",
+		"UPDATE scans SET status='stopped', finished_at=$1 WHERE id=$2",
 		time.Now().UTC().Format(time.RFC3339), id,
 	)
 	Broadcast(WSEvent{Type: "scan.stopped", ScanID: id, Message: "Scan stopped"})
@@ -53,7 +53,7 @@ func StartRecon(c *gin.Context) {
 	id := uuid.New().String()
 	uid := UserIDFromContext(c)
 	_, err := db.DB.Exec(
-		"INSERT INTO scans (id, target, status, user_id) VALUES (?, ?, 'running', ?)",
+		"INSERT INTO scans (id, target, status, user_id) VALUES ($1, $2, 'running', $3)",
 		id, req.Target, uid,
 	)
 	if err != nil {
@@ -74,7 +74,7 @@ func StartRecon(c *gin.Context) {
 func GetScan(c *gin.Context) {
 	id := c.Param("id")
 	uid := UserIDFromContext(c)
-	row := db.DB.QueryRow("SELECT id, target, status, created_at, finished_at FROM scans WHERE id = ? AND user_id = ?", id, uid)
+	row := db.DB.QueryRow("SELECT id, target, status, created_at, finished_at FROM scans WHERE id = $1 AND user_id = $2", id, uid)
 
 	var scan struct {
 		ID         string  `json:"id"`
@@ -94,12 +94,12 @@ func GetScanResults(c *gin.Context) {
 	id := c.Param("id")
 	uid := UserIDFromContext(c)
 	var owner int64
-	if db.DB.QueryRow("SELECT user_id FROM scans WHERE id = ?", id).Scan(&owner) != nil || owner != uid {
+	if db.DB.QueryRow("SELECT user_id FROM scans WHERE id = $1", id).Scan(&owner) != nil || owner != uid {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
 	rows, err := db.DB.Query(
-		"SELECT id, tool, type, result, raw_output FROM scan_results WHERE scan_id = ?", id,
+		"SELECT id, tool, type, result, raw_output FROM scan_results WHERE scan_id = $1", id,
 	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -134,7 +134,7 @@ func GetScanResults(c *gin.Context) {
 func ListScans(c *gin.Context) {
 	uid := UserIDFromContext(c)
 	rows, err := db.DB.Query(
-		"SELECT id, target, status, created_at, finished_at FROM scans WHERE user_id = ? ORDER BY created_at DESC LIMIT 50",
+		"SELECT id, target, status, created_at, finished_at FROM scans WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50",
 		uid,
 	)
 	if err != nil {
@@ -163,7 +163,7 @@ func ListScans(c *gin.Context) {
 
 func markScanDone(scanID string) {
 	db.DB.Exec(
-		"UPDATE scans SET status='completed', finished_at=? WHERE id=?",
+		"UPDATE scans SET status='completed', finished_at=$1 WHERE id=$2",
 		time.Now().UTC().Format(time.RFC3339), scanID,
 	)
 }

@@ -897,7 +897,7 @@ func DeepSearch(c *gin.Context) {
 	uid := UserIDFromContext(c)
 	db.DB.Exec(
 		`INSERT INTO find_scans (id, category, tlds, vuln_types, status, total, finished_at, user_id)
-		 VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)`,
+		 VALUES ($1, $2, $3, $4, 'completed', $5, $6, $7)`,
 		scanID, req.Category, string(tldsJSON), string(vulnsJSON), len(targets), now, uid,
 	)
 
@@ -911,7 +911,7 @@ func DeepSearch(c *gin.Context) {
 			 (scan_id, domain, category, indicator, source, status, status_code,
 			  title, tech, ip, final_url, findings, headers, open_ports,
 			  tests, offline_reason, match_reason)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
 			scanID, t.Domain, t.Category, t.Indicator, t.Source, t.Status,
 			t.StatusCode, t.Title, t.Tech, t.IP, t.FinalURL,
 			string(findingsJSON), string(headersJSON), string(portsJSON),
@@ -931,7 +931,7 @@ func ListFindScans(c *gin.Context) {
 	uid := UserIDFromContext(c)
 	rows, err := db.DB.Query(
 		`SELECT id, category, tlds, vuln_types, status, total, created_at, finished_at
-		 FROM find_scans WHERE user_id = ? ORDER BY created_at DESC LIMIT 50`,
+		 FROM find_scans WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`,
 		uid,
 	)
 	if err != nil {
@@ -968,7 +968,7 @@ func GetFindTargets(c *gin.Context) {
 	id := c.Param("id")
 	uid := UserIDFromContext(c)
 	var owner int64
-	if db.DB.QueryRow("SELECT user_id FROM find_scans WHERE id = ?", id).Scan(&owner) != nil || owner != uid {
+	if db.DB.QueryRow("SELECT user_id FROM find_scans WHERE id = $1", id).Scan(&owner) != nil || owner != uid {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
@@ -978,7 +978,7 @@ func GetFindTargets(c *gin.Context) {
 		        COALESCE(ip,''), COALESCE(final_url,''),
 		        COALESCE(findings,''), COALESCE(headers,''), COALESCE(open_ports,''),
 		        COALESCE(tests,''), COALESCE(offline_reason,''), COALESCE(match_reason,'')
-		 FROM find_targets WHERE scan_id = ?
+		 FROM find_targets WHERE scan_id = $1
 		 ORDER BY status DESC, domain ASC`,
 		id,
 	)

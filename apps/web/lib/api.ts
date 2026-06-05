@@ -83,6 +83,85 @@ export async function fetchFindTargets(id: string) {
   return authedJSON(`${BASE}/find/${id}/targets`);
 }
 
+export interface ChatMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  tool_call_id?: string;
+  tool_calls?: Array<{
+    id: string;
+    type: string;
+    function: { name: string; arguments: string };
+  }>;
+}
+
+export interface ToolCall {
+  id: string;
+  type: string;
+  function: { name: string; arguments: string };
+}
+
+export function chatStream(
+  messages: ChatMessage[],
+  model = "openai/gpt-4o",
+  onEvent?: (ev: any) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  return fetch(`${BASE}/ai/chat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
+    body: JSON.stringify({ messages, model }),
+    signal,
+  }).then(async (res) => {
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || "chat request failed");
+    }
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error("no response body");
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const json = line.slice(6).trim();
+        if (!json) continue;
+        try {
+          const ev = JSON.parse(json);
+          onEvent?.(ev);
+        } catch {
+          // ignore malformed
+        }
+      }
+    }
+  });
+}
+
+export interface AIConfig {
+  base_url: string;
+  model: string;
+  api_key?: string;
+}
+
+export async function getAIConfig(): Promise<{ configured: boolean; config?: AIConfig }> {
+  return authedJSON(`${BASE}/ai/config`);
+}
+
+export async function saveAIConfig(cfg: AIConfig) {
+  return authedJSON(`${BASE}/ai/config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(cfg),
+  });
+}
+
 export async function startDeepSearch(category: string, tlds: string[], vulnTypes: string[]) {
   const res = await authedFetch(`${BASE}/find/deepsearch`, {
     method: "POST",

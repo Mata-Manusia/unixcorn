@@ -12,12 +12,13 @@ import { logout, getUser, type AuthUser } from "@/lib/auth";
 import { useTheme } from "@/components/theme-provider";
 
 const navItems = [
-  { href: "/",       label: "Dashboard" },
-  { href: "/find",   label: "Find" },
-  { href: "/recon",  label: "Recon" },
-  { href: "/exploit",label: "Exploit" },
-  { href: "/logs",   label: "Logs" },
-  { href: "/tools",  label: "Tools" },
+  { href: "/",          label: "Dashboard" },
+  { href: "/automation",label: "Automation" },
+  { href: "/find",      label: "Find" },
+  { href: "/recon",     label: "Recon" },
+  { href: "/exploit",   label: "Exploit" },
+  { href: "/logs",      label: "Logs" },
+  { href: "/tools",     label: "Tools" },
 ];
 
 export function Header() {

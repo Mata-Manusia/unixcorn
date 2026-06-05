@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"unixcorn/daemon/internal/api"
 	"unixcorn/daemon/internal/db"
 	"unixcorn/daemon/internal/plugin"
@@ -13,7 +14,11 @@ import (
 )
 
 func main() {
-	if err := db.Init("./storage/unixcorn.db"); err != nil {
+	connStr := os.Getenv("DATABASE_URL")
+	if connStr == "" {
+		connStr = "postgres://localhost:5432/unixcorn?sslmode=disable"
+	}
+	if err := db.Init(connStr); err != nil {
 		log.Fatal("[db] init failed:", err)
 	}
 
@@ -26,7 +31,7 @@ func main() {
 			func(ev plugin.PipelineEvent) {
 				// Persist structured result row
 				db.DB.Exec(
-					"INSERT INTO scan_results (scan_id, tool, type, result, raw_output) VALUES (?, ?, ?, ?, ?)",
+					"INSERT INTO scan_results (scan_id, tool, type, result, raw_output) VALUES ($1, $2, $3, $4, $5)",
 					job.ID, ev.Tool, ev.Type, ev.Result, ev.RawOutput,
 				)
 				api.Broadcast(api.WSEvent{
@@ -38,7 +43,7 @@ func main() {
 			},
 			func(level, line string) {
 				db.DB.Exec(
-					"INSERT INTO logs (scan_id, level, message) VALUES (?, ?, ?)",
+					"INSERT INTO logs (scan_id, level, message) VALUES ($1, $2, $3)",
 					job.ID, level, line,
 				)
 				api.Broadcast(api.WSEvent{
@@ -56,9 +61,9 @@ func main() {
 		})
 
 		var status string
-		db.DB.QueryRow("SELECT status FROM scans WHERE id=?", job.ID).Scan(&status)
+		db.DB.QueryRow("SELECT status FROM scans WHERE id=$1", job.ID).Scan(&status)
 		if status != "stopped" {
-			db.DB.Exec("UPDATE scans SET status='completed', finished_at=CURRENT_TIMESTAMP WHERE id=?", job.ID)
+			db.DB.Exec("UPDATE scans SET status='completed', finished_at=CURRENT_TIMESTAMP WHERE id=$1", job.ID)
 			api.Broadcast(api.WSEvent{Type: "scan.completed", ScanID: job.ID, Message: "Scan complete"})
 		}
 	})
@@ -112,6 +117,10 @@ func main() {
 		v1.POST("/find/deepsearch", api.DeepSearch)
 		v1.GET("/find/scans", api.ListFindScans)
 		v1.GET("/find/:id/targets", api.GetFindTargets)
+
+		v1.GET("/ai/config", api.GetAIConfig)
+		v1.POST("/ai/config", api.SaveAIConfig)
+		v1.POST("/ai/chat", api.ChatHandler)
 	}
 
 	log.Println("[daemon] listening on :8080")
