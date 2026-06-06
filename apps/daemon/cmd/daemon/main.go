@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 	"unixcorn/daemon/internal/api"
 	"unixcorn/daemon/internal/db"
 	"unixcorn/daemon/internal/plugin"
@@ -73,7 +74,7 @@ func main() {
 	r := gin.Default()
 	r.Use(func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "http://localhost:3000")
-		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Content-Type,Authorization")
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)
@@ -121,10 +122,28 @@ func main() {
 		v1.GET("/ai/config", api.GetAIConfig)
 		v1.POST("/ai/config", api.SaveAIConfig)
 		v1.POST("/ai/chat", api.ChatHandler)
+
+		v1.GET("/ai/sessions", api.ListSessions)
+		v1.POST("/ai/sessions", api.CreateSession)
+		v1.GET("/ai/sessions/:id/messages", api.GetSessionMessages)
+		v1.GET("/ai/sessions/:id/stream", api.StreamSession)
+		v1.GET("/ai/sessions/:id/active", api.ActiveSessionHandler)
+		v1.PATCH("/ai/sessions/:id", api.UpdateSession)
+		v1.DELETE("/ai/sessions/:id", api.DeleteSession)
+
+		v1.GET("/resources", api.ListResources)
+		v1.GET("/resources/:name", api.GetResource)
 	}
 
 	log.Println("[daemon] listening on :8080")
-	if err := r.Run(":8080"); err != nil {
+	srv := &http.Server{
+		Addr:         ":8080",
+		Handler:      r,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 0, // SSE streams need unlimited write time
+		IdleTimeout:  120 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

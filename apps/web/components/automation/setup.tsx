@@ -11,8 +11,8 @@ interface Props {
 }
 
 export function Setup({ onConfigured, editMode, onCancel }: Props) {
-  const [baseURL, setBaseURL] = useState("https://openrouter.ai/api/v1");
-  const [model, setModel] = useState("openai/gpt-4o");
+  const [baseURL, setBaseURL] = useState("https://opencode.ai/zen/v1");
+  const [model, setModel] = useState("big-pickle");
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -40,6 +40,7 @@ export function Setup({ onConfigured, editMode, onCancel }: Props) {
     setSuccess(false);
     try {
       await saveConfig({ base_url: baseURL, model, api_key: apiKey });
+      localStorage.setItem("unixcorn_ai_configured", "1");
       setSuccess(true);
       setTimeout(() => onConfigured(), 1000);
     } catch (err: any) {
@@ -70,7 +71,7 @@ export function Setup({ onConfigured, editMode, onCancel }: Props) {
             {editMode
               ? "Update your AI provider configuration."
               : "Configure your AI provider to use the Automation agent."}
-            <br />Supports any OpenAI-compatible API (OpenRouter, OpenAI, local LLM).
+            <br />Supports any OpenAI-compatible API (Alibaba Cloud, OpenRouter, OpenAI, local LLM).
           </p>
         </div>
 
@@ -83,7 +84,7 @@ export function Setup({ onConfigured, editMode, onCancel }: Props) {
             <input
               value={baseURL}
               onChange={(e) => setBaseURL(e.target.value)}
-              placeholder="https://openrouter.ai/api/v1"
+              placeholder="https://opencode.ai/zen/v1"
               className="mt-1 w-full rounded border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-mono text-zinc-200 focus:border-fuchsia-600 focus:outline-none"
             />
             <p className="mt-0.5 text-[10px] text-zinc-600">
@@ -98,7 +99,7 @@ export function Setup({ onConfigured, editMode, onCancel }: Props) {
             <input
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              placeholder="openai/gpt-4o"
+              placeholder="big-pickle"
               className="mt-1 w-full rounded border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-mono text-zinc-200 focus:border-fuchsia-600 focus:outline-none"
             />
             <p className="mt-0.5 text-[10px] text-zinc-600">
@@ -163,11 +164,11 @@ export function Setup({ onConfigured, editMode, onCancel }: Props) {
           </p>
           <div className="grid grid-cols-2 gap-2">
             {[
+              { label: "OpenCode Zen", base: "https://opencode.ai/zen/v1", model: "big-pickle" },
               { label: "OpenRouter", base: "https://openrouter.ai/api/v1", model: "openai/gpt-4o" },
               { label: "OpenAI", base: "https://api.openai.com/v1", model: "gpt-4o" },
               { label: "DeepSeek", base: "https://api.deepseek.com/v1", model: "deepseek-chat" },
               { label: "Ollama (local)", base: "http://localhost:11434/v1", model: "llama3.2" },
-              { label: "vLLM (local)", base: "http://localhost:8000/v1", model: "mistral" },
             ].map((p) => (
               <button
                 key={p.label}

@@ -74,6 +74,7 @@ type crtEntry struct {
 }
 
 var osintClient = &http.Client{Timeout: 8 * time.Second}
+var crtClient = &http.Client{Timeout: 20 * time.Second}
 var titleRe = regexp.MustCompile(`(?i)<title[^>]*>([^<]{1,200})`)
 
 var techPatterns = []struct {
@@ -656,31 +657,45 @@ func queryCrtSh(tld string) ([]string, string, error) {
 	query := strings.ReplaceAll(tld, "*", "%")
 	reqURL := fmt.Sprintf("https://crt.sh/?q=%s&output=json", url.QueryEscape(query))
 
-	resp, err := osintClient.Get(reqURL)
-	if err != nil {
-		return nil, "crt.sh", fmt.Errorf("crt.sh unreachable: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, "crt.sh", fmt.Errorf("crt.sh HTTP %d", resp.StatusCode)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	var entries []crtEntry
-	if err := json.Unmarshal(body, &entries); err != nil {
-		return nil, "crt.sh", fmt.Errorf("crt.sh bad JSON: %w", err)
-	}
-	seen := map[string]bool{}
-	var out []string
-	for _, e := range entries {
-		for _, d := range strings.Split(e.NameValue, "\n") {
-			d = strings.TrimSpace(strings.TrimPrefix(d, "*."))
-			if d != "" && !seen[d] && !strings.Contains(d, " ") {
-				seen[d] = true
-				out = append(out, d)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		}
+		resp, err := crtClient.Get(reqURL)
+		if err != nil {
+			lastErr = fmt.Errorf("crt.sh unreachable: %w", err)
+			continue
+		}
+		if resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("crt.sh HTTP %d (retrying)", resp.StatusCode)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, "crt.sh", fmt.Errorf("crt.sh HTTP %d", resp.StatusCode)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		var entries []crtEntry
+		if err := json.Unmarshal(body, &entries); err != nil {
+			return nil, "crt.sh", fmt.Errorf("crt.sh bad JSON: %w", err)
+		}
+		seen := map[string]bool{}
+		var out []string
+		for _, e := range entries {
+			for _, d := range strings.Split(e.NameValue, "\n") {
+				d = strings.TrimSpace(strings.TrimPrefix(d, "*."))
+				if d != "" && !seen[d] && !strings.Contains(d, " ") {
+					seen[d] = true
+					out = append(out, d)
+				}
 			}
 		}
+		return out, "crt.sh", nil
 	}
-	return out, "crt.sh", nil
+	return nil, "crt.sh", lastErr
 }
 
 func queryHackerTarget(tld string) ([]string, string, error) {

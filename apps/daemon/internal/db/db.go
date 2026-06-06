@@ -148,6 +148,23 @@ func migrate() error {
 		created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE TABLE IF NOT EXISTS chat_sessions (
+		id         BIGSERIAL PRIMARY KEY,
+		user_id    INTEGER NOT NULL REFERENCES users(id),
+		title      TEXT NOT NULL DEFAULT 'New Chat',
+		created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS chat_messages (
+		id         BIGSERIAL PRIMARY KEY,
+		session_id BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+		role       TEXT NOT NULL,
+		content    TEXT NOT NULL DEFAULT '',
+		tool_calls TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 	_, err := DB.Exec(schema)
 	return err

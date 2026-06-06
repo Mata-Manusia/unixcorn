@@ -104,7 +104,8 @@ export function chatStream(
   messages: ChatMessage[],
   model = "openai/gpt-4o",
   onEvent?: (ev: any) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  sessionId?: number
 ): Promise<void> {
   return fetch(`${BASE}/ai/chat`, {
     method: "POST",
@@ -112,7 +113,7 @@ export function chatStream(
       "Content-Type": "application/json",
       ...authHeaders(),
     },
-    body: JSON.stringify({ messages, model }),
+    body: JSON.stringify({ messages, model, session_id: sessionId ?? 0 }),
     signal,
   }).then(async (res) => {
     if (!res.ok) {
@@ -144,6 +145,51 @@ export function chatStream(
   });
 }
 
+export async function checkSessionActive(sessionId: number): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE}/ai/sessions/${sessionId}/active`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data.active === true;
+  } catch {
+    return false;
+  }
+}
+
+export function streamSessionEvents(
+  sessionId: number,
+  onEvent: (ev: any) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  return fetch(`${BASE}/ai/sessions/${sessionId}/stream`, {
+    headers: authHeaders(),
+    signal,
+  }).then(async (res) => {
+    if (!res.ok || !res.body) return;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const json = line.slice(6).trim();
+        if (!json) continue;
+        try {
+          const ev = JSON.parse(json);
+          onEvent(ev);
+        } catch {}
+      }
+    }
+  });
+}
+
 export interface AIConfig {
   base_url: string;
   model: string;
@@ -160,6 +206,64 @@ export async function saveAIConfig(cfg: AIConfig) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(cfg),
   });
+}
+
+export interface ChatSession {
+  id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SessionMessage {
+  id: number;
+  session_id: number;
+  role: "user" | "assistant" | "tool";
+  content: string;
+  tool_calls?: string;
+  created_at: string;
+}
+
+export async function listSessions(): Promise<ChatSession[]> {
+  return authedJSON(`${BASE}/ai/sessions`);
+}
+
+export async function createSession(title?: string): Promise<{ id: number; title: string }> {
+  return authedJSON(`${BASE}/ai/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: title || "New Chat" }),
+  });
+}
+
+export async function getSessionMessages(id: number): Promise<SessionMessage[]> {
+  return authedJSON(`${BASE}/ai/sessions/${id}/messages`);
+}
+
+export async function deleteSession(id: number): Promise<void> {
+  return authedJSON(`${BASE}/ai/sessions/${id}`, { method: "DELETE" });
+}
+
+export async function updateSessionTitle(id: number, title: string): Promise<void> {
+  return authedJSON(`${BASE}/ai/sessions/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+}
+
+export interface ResourceFile {
+  name: string;
+  title: string;
+}
+
+export async function listResources(): Promise<ResourceFile[]> {
+  const data = await authedJSON(`${BASE}/resources`);
+  return data.files || [];
+}
+
+export async function getResource(name: string): Promise<{ name: string; title: string; content: string }> {
+  return authedJSON(`${BASE}/resources/${encodeURIComponent(name)}`);
 }
 
 export async function startDeepSearch(category: string, tlds: string[], vulnTypes: string[]) {

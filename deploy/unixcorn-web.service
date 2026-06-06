@@ -1,0 +1,17 @@
+[Unit]
+Description=Unixcorn Next.js Frontend
+After=network.target unixcorn-daemon.service
+Wants=unixcorn-daemon.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/unixcorn/apps/web
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
