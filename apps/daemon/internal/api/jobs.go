@@ -13,10 +13,17 @@ type SessionJob struct {
 	events []SSEEvent
 	done   bool
 	wake   chan struct{} // cap-1 nudge channel; non-blocking send
+	cancel context.CancelFunc
+	ctx    context.Context
 }
 
 func newSessionJobObj() *SessionJob {
-	return &SessionJob{wake: make(chan struct{}, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &SessionJob{
+		wake:   make(chan struct{}, 1),
+		ctx:    ctx,
+		cancel: cancel,
+	}
 }
 
 func (j *SessionJob) Publish(ev SSEEvent) {
@@ -37,6 +44,16 @@ func (j *SessionJob) IsActive() bool {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return !j.done
+}
+
+// Stop cancels the agent goroutine context, causing runAgent to exit after current iteration.
+func (j *SessionJob) Stop() {
+	j.cancel()
+}
+
+// Context returns the job's cancellable context for use by runAgent.
+func (j *SessionJob) Context() context.Context {
+	return j.ctx
 }
 
 // Watch streams all events to emit, starting from index `from`.

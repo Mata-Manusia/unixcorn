@@ -128,6 +128,9 @@ func main() {
 		v1.GET("/ai/sessions/:id/messages", api.GetSessionMessages)
 		v1.GET("/ai/sessions/:id/stream", api.StreamSession)
 		v1.GET("/ai/sessions/:id/active", api.ActiveSessionHandler)
+		v1.POST("/ai/sessions/:id/stop", api.StopSessionHandler)
+		v1.GET("/ai/sessions/:id/workspace", api.WorkspaceListHandler)
+		v1.GET("/ai/sessions/:id/workspace/:filename", api.WorkspaceFileHandler)
 		v1.PATCH("/ai/sessions/:id", api.UpdateSession)
 		v1.DELETE("/ai/sessions/:id", api.DeleteSession)
 

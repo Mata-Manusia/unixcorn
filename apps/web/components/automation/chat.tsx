@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useRouter, useParams } from "next/navigation";
 import {
   chatStream, getAIConfig, listSessions, createSession,
   getSessionMessages, deleteSession, updateSessionTitle,
-  checkSessionActive, streamSessionEvents,
+  checkSessionActive, streamSessionEvents, stopSession,
   type ChatMessage, type ChatSession,
 } from "@/lib/api";
 import { MessageList } from "./message-list";
@@ -12,7 +13,8 @@ import { ChatInput } from "./chat-input";
 import { Sidebar } from "./sidebar";
 import { Setup } from "./setup";
 import { ResourcesPanel } from "./resources-panel";
-import { PlusIcon, TrashIcon, ChevronLeftIcon, ChevronRightIcon, Cog6ToothIcon, BookOpenIcon } from "@heroicons/react/24/outline";
+import { WorkspacePanel } from "./workspace-panel";
+import { PlusIcon, TrashIcon, ChevronLeftIcon, ChevronRightIcon, Cog6ToothIcon, BookOpenIcon, FolderOpenIcon } from "@heroicons/react/24/outline";
 import { SparklesIcon } from "@heroicons/react/24/solid";
 
 export interface ToolCallEvent { name: string; args: Record<string, any>; }
@@ -38,13 +40,20 @@ function lastAssistantIdx(msgs: ChatMessageDisplay[]): number {
 }
 
 export function Chat() {
+  const router = useRouter();
+  const params = useParams();
+  const urlSessionId = params?.id ? parseInt(params.id as string) : null;
+
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [messages, setMessages] = useState<ChatMessageDisplay[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [model, setModel] = useState("");
+  const [target, setTarget] = useState("");
+  const [tokens, setTokens] = useState({ prompt: 0, completion: 0 });
   const [error, setError] = useState<string | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
   const [resourcesOpen, setResourcesOpen] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<number | null>(null);
@@ -53,6 +62,7 @@ export function Chat() {
   const [editingTitle, setEditingTitle] = useState("");
   const isFirstMessage = useRef(true);
   const abortRef = useRef<AbortController | null>(null);
+  const streamingSessionRef = useRef<number | null>(null);
 
   useEffect(() => {
     // Optimistic: if previously configured, don't flash setup screen
@@ -80,11 +90,24 @@ export function Chat() {
     try {
       const s = await listSessions();
       setSessions(s);
-      if (s.length > 0) await loadSession(s[0].id);
+      if (urlSessionId && s.find(x => x.id === urlSessionId)) {
+        await loadSession(urlSessionId);
+      } else if (s.length > 0) {
+        await loadSession(s[0].id);
+      }
     } catch {}
   };
 
-  const loadSession = async (id: number) => {
+  const loadSession = async (id: number, pushUrl = false) => {
+    if (pushUrl) router.push(`/automation/s/${id}`);
+    // Abort any existing stream before switching sessions
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    streamingSessionRef.current = null;
+    setStreaming(false);
+
     try {
       const [msgs, active] = await Promise.all([
         getSessionMessages(id),
@@ -92,15 +115,17 @@ export function Chat() {
       ]);
       setCurrentSessionId(id);
       setError(null);
+      setTokens({ prompt: 0, completion: 0 });
       isFirstMessage.current = msgs.filter(m => m.role === "user").length === 0;
       setMessages(msgs.map((m) => ({ id: `${m.role}-${m.id}`, role: m.role, content: m.content })));
 
       if (active) {
-        // Session has a running background job — re-subscribe to its event stream
-        addAssistantMessage();
-        setStreaming(true);
         const ctrl = new AbortController();
         abortRef.current = ctrl;
+        streamingSessionRef.current = id;
+        addAssistantMessage();
+        setStreaming(true);
+
         streamSessionEvents(id, (ev) => {
           switch (ev.type) {
             case "token": appendToken(ev.content); break;
@@ -110,17 +135,35 @@ export function Chat() {
             case "tool_start": addToolCall(ev.name, ev.args); break;
             case "tool_end": addToolResult(ev.name, ev.result); break;
             case "error": setError(ev.error); break;
+            case "done":
+              if (ev.prompt_tokens || ev.completion_tokens) {
+                setTokens({ prompt: ev.prompt_tokens ?? 0, completion: ev.completion_tokens ?? 0 });
+              }
+              break;
           }
-        }, ctrl.signal).finally(() => {
-          setStreaming(false);
-          abortRef.current = null;
-        });
+        }, ctrl.signal)
+          .catch(() => {}) // AbortError already handled in api.ts; swallow any remaining
+          .finally(() => {
+            if (streamingSessionRef.current === id) {
+              setStreaming(false);
+              abortRef.current = null;
+              streamingSessionRef.current = null;
+            }
+          });
       }
     } catch {}
   };
 
   // Manual trigger: click + → create session immediately
   const handleNewChat = async () => {
+    // Abort existing stream so previous session doesn't keep streaming state
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    streamingSessionRef.current = null;
+    setStreaming(false);
+
     try {
       const s = await createSession("Untitled Workspace");
       const now = new Date().toISOString();
@@ -129,6 +172,7 @@ export function Chat() {
       setCurrentSessionId(s.id);
       setMessages([]);
       setError(null);
+      setTokens({ prompt: 0, completion: 0 });
       isFirstMessage.current = true;
     } catch {}
   };
@@ -265,6 +309,8 @@ export function Chat() {
       { role: "user" as const, content: input },
     ];
 
+    const sendingSid = sid;
+    streamingSessionRef.current = sendingSid;
     setStreaming(true);
     abortRef.current = new AbortController();
     addAssistantMessage();
@@ -279,17 +325,30 @@ export function Chat() {
           case "tool_start": addToolCall(ev.name, ev.args); break;
           case "tool_end": addToolResult(ev.name, ev.result); break;
           case "error": setError(ev.error); break;
+          case "done":
+            if (ev.prompt_tokens || ev.completion_tokens) {
+              setTokens({ prompt: ev.prompt_tokens ?? 0, completion: ev.completion_tokens ?? 0 });
+            }
+            break;
         }
-      }, abortRef.current.signal, sid ?? undefined);
+      }, abortRef.current.signal, sid ?? undefined, target);
     } catch (err: any) {
       if (err.name !== "AbortError") setError(err.message || "Request failed");
     } finally {
-      setStreaming(false);
-      abortRef.current = null;
+      if (streamingSessionRef.current === sendingSid) {
+        setStreaming(false);
+        abortRef.current = null;
+        streamingSessionRef.current = null;
+      }
     }
   };
 
-  const handleStop = () => { abortRef.current?.abort(); setStreaming(false); };
+  const handleStop = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    streamingSessionRef.current = null;
+    setStreaming(false);
+  };
 
   const bottomRef = useRef<HTMLDivElement>(null);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
@@ -403,6 +462,16 @@ export function Chat() {
             className="rounded-lg border border-zinc-700/60 bg-zinc-800/60 px-2.5 py-1 text-xs font-mono text-zinc-300 focus:border-zinc-600 focus:outline-none w-44"
           />
 
+          <div className="flex items-center gap-1.5 rounded-lg border border-zinc-700/60 bg-zinc-800/60 px-2.5 py-1">
+            <span className="text-[10px] text-zinc-600 font-mono shrink-0">TARGET</span>
+            <input
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              placeholder="https://example.com"
+              className="bg-transparent text-xs font-mono text-fuchsia-300 placeholder:text-zinc-600 focus:outline-none w-48"
+            />
+          </div>
+
           {streaming && (
             <span className="flex items-center gap-1.5 text-xs text-emerald-400">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -410,9 +479,15 @@ export function Chat() {
             </span>
           )}
 
+          {!streaming && (tokens.prompt > 0 || tokens.completion > 0) && (
+            <span className="text-[10px] font-mono text-zinc-600" title={`Prompt: ${tokens.prompt.toLocaleString()} | Completion: ${tokens.completion.toLocaleString()}`}>
+              ↑{(tokens.prompt / 1000).toFixed(1)}k ↓{(tokens.completion / 1000).toFixed(1)}k tokens
+            </span>
+          )}
+
           <div className="ml-auto flex items-center gap-1">
             <button
-              onClick={() => { setResourcesOpen((v) => !v); setActivityOpen(false); }}
+              onClick={() => { setResourcesOpen((v) => !v); setActivityOpen(false); setWorkspaceOpen(false); }}
               className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] transition-colors ${
                 resourcesOpen
                   ? "bg-fuchsia-600/20 text-fuchsia-300"
@@ -424,7 +499,19 @@ export function Chat() {
               Resources
             </button>
             <button
-              onClick={() => { setActivityOpen((v) => !v); setResourcesOpen(false); }}
+              onClick={() => { setWorkspaceOpen((v) => !v); setActivityOpen(false); setResourcesOpen(false); }}
+              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] transition-colors ${
+                workspaceOpen
+                  ? "bg-emerald-600/20 text-emerald-300"
+                  : "text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+              }`}
+              title="Workspace Files"
+            >
+              <FolderOpenIcon className="h-3.5 w-3.5" />
+              Files
+            </button>
+            <button
+              onClick={() => { setActivityOpen((v) => !v); setResourcesOpen(false); setWorkspaceOpen(false); }}
               className={`rounded-lg px-2.5 py-1 text-[11px] transition-colors ${
                 activityOpen
                   ? "bg-zinc-700 text-zinc-200"
@@ -445,10 +532,17 @@ export function Chat() {
               onPromptClick={handleSend}
               streaming={streaming}
             />
-            <ChatInput onSend={handleSend} onStop={handleStop} streaming={streaming} />
+            <ChatInput onSend={handleSend} onStop={handleStop} streaming={streaming} target={target} />
           </div>
           {activityOpen && <Sidebar messages={messages} />}
           {resourcesOpen && <ResourcesPanel onClose={() => setResourcesOpen(false)} />}
+          {workspaceOpen && (
+            <WorkspacePanel
+              sessionId={currentSessionId}
+              streaming={streaming}
+              onClose={() => setWorkspaceOpen(false)}
+            />
+          )}
         </div>
       </div>
     </div>

@@ -105,7 +105,8 @@ export function chatStream(
   model = "openai/gpt-4o",
   onEvent?: (ev: any) => void,
   signal?: AbortSignal,
-  sessionId?: number
+  sessionId?: number,
+  target?: string
 ): Promise<void> {
   return fetch(`${BASE}/ai/chat`, {
     method: "POST",
@@ -113,7 +114,7 @@ export function chatStream(
       "Content-Type": "application/json",
       ...authHeaders(),
     },
-    body: JSON.stringify({ messages, model, session_id: sessionId ?? 0 }),
+    body: JSON.stringify({ messages, model, session_id: sessionId ?? 0, target: target ?? "" }),
     signal,
   }).then(async (res) => {
     if (!res.ok) {
@@ -124,23 +125,28 @@ export function chatStream(
     if (!reader) throw new Error("no response body");
     const decoder = new TextDecoder();
     let buffer = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const json = line.slice(6).trim();
-        if (!json) continue;
-        try {
-          const ev = JSON.parse(json);
-          onEvent?.(ev);
-        } catch {
-          // ignore malformed
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const json = line.slice(6).trim();
+          if (!json) continue;
+          try {
+            const ev = JSON.parse(json);
+            onEvent?.(ev);
+          } catch {
+            // ignore malformed
+          }
         }
       }
+    } catch (err: any) {
+      if (err?.name !== "AbortError") throw err;
+      // AbortError is expected on stream cancel — swallow silently
     }
   });
 }
@@ -171,22 +177,29 @@ export function streamSessionEvents(
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const json = line.slice(6).trim();
-        if (!json) continue;
-        try {
-          const ev = JSON.parse(json);
-          onEvent(ev);
-        } catch {}
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const json = line.slice(6).trim();
+          if (!json) continue;
+          try {
+            const ev = JSON.parse(json);
+            onEvent(ev);
+          } catch {}
+        }
       }
+    } catch (err: any) {
+      if (err?.name !== "AbortError") throw err;
     }
+  }).catch((err: any) => {
+    // fetch() itself throws AbortError when signal fires before response
+    if (err?.name !== "AbortError") throw err;
   });
 }
 
@@ -264,6 +277,26 @@ export async function listResources(): Promise<ResourceFile[]> {
 
 export async function getResource(name: string): Promise<{ name: string; title: string; content: string }> {
   return authedJSON(`${BASE}/resources/${encodeURIComponent(name)}`);
+}
+
+export interface WorkspaceFile {
+  name: string;
+  size: number;
+  mod_time: string;
+  is_dir: boolean;
+}
+
+export async function stopSession(id: number): Promise<void> {
+  await authedFetch(`${BASE}/ai/sessions/${id}/stop`, { method: "POST" });
+}
+
+export async function listWorkspaceFiles(sessionId: number): Promise<{ files: WorkspaceFile[]; workspace: string }> {
+  const data = await authedJSON(`${BASE}/ai/sessions/${sessionId}/workspace`);
+  return { files: data.files || [], workspace: data.workspace || "" };
+}
+
+export async function getWorkspaceFile(sessionId: number, filename: string): Promise<{ name: string; content: string; size: number }> {
+  return authedJSON(`${BASE}/ai/sessions/${sessionId}/workspace/${encodeURIComponent(filename)}`);
 }
 
 export async function startDeepSearch(category: string, tlds: string[], vulnTypes: string[]) {

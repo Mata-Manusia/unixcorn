@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 	"unixcorn/daemon/internal/db"
 
@@ -43,7 +44,21 @@ type ChatRequest struct {
 	Messages  []ChatMessage `json:"messages"`
 	Model     string        `json:"model"`
 	SessionID int64         `json:"session_id"`
+	Target    string        `json:"target,omitempty"`
 }
+
+// ---- background process registry ----
+
+type bgProc struct {
+	cmd     *exec.Cmd
+	cmdStr  string
+	started time.Time
+}
+
+var (
+	bgProcsMu sync.Mutex
+	bgProcs   = make(map[int64][]*bgProc)
+)
 
 // ---- tool definitions ----
 
@@ -75,7 +90,7 @@ var tools = []toolDef{
 		Type: "function",
 		Function: toolFunction{
 			Name:        "run_terminal_cmd",
-			Description: "Execute a shell command on the host system. Use for recon, scanning, exploitation, and general system tasks.",
+			Description: "Execute a shell command and WAIT for it to finish. ONLY use for fast commands (<30s): curl, nmap quick scans, grep, cat, whois, dig. For slow tools (sqlmap, nuclei, gobuster, nikto, wpscan, ffuf) — use run_background_cmd instead or they will block the entire agent loop.",
 			Parameters: parameters{
 				Type: "object",
 				Properties: map[string]propDef{
@@ -143,6 +158,66 @@ var tools = []toolDef{
 			},
 		},
 	},
+	{
+		Type: "function",
+		Function: toolFunction{
+			Name:        "http_request",
+			Description: "Make a structured HTTP request with full control over method, headers, body, proxy, and redirects. Better than curl for API and web app testing.",
+			Parameters: parameters{
+				Type: "object",
+				Properties: map[string]propDef{
+					"url":              {Type: "string", Description: "Target URL"},
+					"method":           {Type: "string", Description: "HTTP method (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)"},
+					"headers":          {Type: "object", Description: "Request headers as key-value object"},
+					"body":             {Type: "string", Description: "Request body (for POST/PUT/PATCH)"},
+					"follow_redirects": {Type: "string", Description: "Follow redirects: 'true' or 'false' (default true)"},
+					"proxy":            {Type: "string", Description: "Proxy URL e.g. http://127.0.0.1:8080"},
+					"timeout":          {Type: "string", Description: "Request timeout e.g. 30s (default 30s)"},
+				},
+				Required: []string{"url"},
+			},
+		},
+	},
+	{
+		Type: "function",
+		Function: toolFunction{
+			Name:        "run_background_cmd",
+			Description: "Run a shell command in background — returns PID immediately, does NOT block the loop. MANDATORY for: sqlmap, nuclei, nikto, gobuster, wpscan, ffuf (large wordlist), or any tool expected to run >30s. Redirect output to $WORKSPACE/ so you can read progress with file_read. Example: sqlmap -u URL --batch --output-dir=$WORKSPACE/sqlmap/ 2>&1 | tee $WORKSPACE/sqlmap.log",
+			Parameters: parameters{
+				Type: "object",
+				Properties: map[string]propDef{
+					"command": {Type: "string", Description: "Shell command to run in background"},
+				},
+				Required: []string{"command"},
+			},
+		},
+	},
+	{
+		Type: "function",
+		Function: toolFunction{
+			Name:        "list_processes",
+			Description: "List all background processes started in this session with their PID, status, and log file path.",
+			Parameters: parameters{
+				Type:       "object",
+				Properties: map[string]propDef{},
+				Required:   []string{},
+			},
+		},
+	},
+	{
+		Type: "function",
+		Function: toolFunction{
+			Name:        "kill_process",
+			Description: "Kill a background process by PID.",
+			Parameters: parameters{
+				Type: "object",
+				Properties: map[string]propDef{
+					"pid": {Type: "number", Description: "Process ID to kill"},
+				},
+				Required: []string{"pid"},
+			},
+		},
+	},
 }
 
 // ---- system prompt ----
@@ -178,7 +253,23 @@ func loadResourceDocs() string {
 	return strings.Join(parts, "\n\n---\n\n")
 }
 
-func buildSystemPrompt() string {
+func buildSystemPrompt(target, workspace string) string {
+	var sessionCtx string
+	if target != "" || workspace != "" {
+		sessionCtx = "\n\n<session_context>\n"
+		if target != "" {
+			sessionCtx += "PRIMARY TARGET: " + target + "\n"
+		}
+		if workspace != "" {
+			sessionCtx += "SESSION WORKSPACE: " + workspace + "\n"
+			sessionCtx += "- Save ALL scan output to $WORKSPACE/ (env var set automatically)\n"
+			sessionCtx += "- Use: nmap target -oN $WORKSPACE/nmap.txt\n"
+			sessionCtx += "- Use: sqlmap ... --output-dir=$WORKSPACE/sqlmap/\n"
+			sessionCtx += "- Use: ffuf ... -o $WORKSPACE/ffuf.json\n"
+		}
+		sessionCtx += "</session_context>"
+	}
+
 	base := `You are Unixcorn AI, an expert AI-powered penetration testing assistant for authorized cybersecurity professionals.
 
 <security_authorization>
@@ -226,34 +317,53 @@ FILE-BASED OUTPUT (MANDATORY for any tool that produces >100 lines):
 - Pattern: tool-cmd ... > /tmp/scan_output.txt 2>&1; echo "EXIT:$?"; tail -50 /tmp/scan_output.txt
 - Read full file after: use file_read tool on /tmp/scan_output.txt
 
-HEAVY TOOLS — always set timeout parameter:
-- sqlmap: timeout=600s (10 min), use --batch --level=3 --output-dir=/tmp/sqlmap_out/
-- nuclei: timeout=300s, use -o /tmp/nuclei.txt
-- nmap -sV: timeout=180s
-- gobuster/ffuf: timeout=120s, use -o /tmp/fuzz.txt
+BACKGROUND vs FOREGROUND — CRITICAL DECISION RULE:
+Use run_background_cmd when estimated runtime > 30 seconds. NEVER block the loop on slow tools.
+
+MANDATORY background tools (ALWAYS use run_background_cmd, NEVER run_terminal_cmd):
+- sqlmap      → run_background_cmd, log to $WORKSPACE/sqlmap.log, then file_read to check progress
+- nuclei      → run_background_cmd, use -o $WORKSPACE/nuclei.txt
+- nikto       → run_background_cmd, log to $WORKSPACE/nikto.log
+- wpscan      → run_background_cmd, log to $WORKSPACE/wpscan.log
+- gobuster    → run_background_cmd, use -o $WORKSPACE/gobuster.txt
+- ffuf (large wordlist) → run_background_cmd, use -o $WORKSPACE/ffuf.json
+
+BACKGROUND WORKFLOW (sqlmap example):
+1. run_background_cmd: sqlmap -u "URL" --batch --level=2 --risk=2 --dbms=mysql --output-dir=$WORKSPACE/sqlmap/ 2>&1 | tee $WORKSPACE/sqlmap.log
+2. Continue with OTHER recon tasks (don't wait idle)
+3. After 2-3 iterations, check: file_read $WORKSPACE/sqlmap.log
+4. If still running: list_processes → continue other work
+5. When done: file_read full results and summarize
+
+FOREGROUND OK (fast, <30s):
+- curl, wget (single request)
+- nmap (quick port scan, no -sV on large range)
+- whois, dig, nslookup
+- grep, cat, tail on existing files
+- http_request tool (always fast)
 
 BATCH COMMANDS WITH &&:
-GOOD (one call, multiple steps):
-  nmap -sV -p 80,443,8080 target 2>&1 | tee /tmp/nmap.txt && grep "open" /tmp/nmap.txt
+GOOD (one foreground call, multiple steps):
+  nmap -p 80,443,8080,8443 target 2>&1 | tee $WORKSPACE/nmap.txt && grep "open" $WORKSPACE/nmap.txt
 
-BAD (wastes 3 iterations):
-  call 1: nmap -sV target
+BAD (wastes iterations):
+  call 1: nmap target
   call 2: grep open result
   call 3: cat result
 
 DON'T REPEAT:
 - Never run same tool twice on same target with same args
-- If curl shows HTML, move on — don't re-run curl
-- One recon per endpoint before moving to exploitation
+- If curl shows HTML, move on
+- One recon per endpoint before exploitation
 
 PRIORITY ORDER:
-1. Recon (fast: curl -I, nmap top ports) — 2-3 calls max
-2. Discovery (dirs, params) — 1-2 calls, save to file
-3. Vulnerability testing (SQLi, XSS, etc.) — targeted, not random
-4. Exploitation — direct once vuln confirmed
-5. Report — use remaining iterations to summarize
+1. Recon (curl -I, nmap quick) — 2-3 calls max
+2. Background heavy scans (sqlmap, nuclei, gobuster) — fire and continue
+3. Discovery analysis — read background results
+4. Targeted exploitation — based on confirmed findings
+5. Report — compile all $WORKSPACE/ files
 
-OUTPUT TRUNCATION: Tool results truncated at 8000 chars. For large outputs, always redirect to file first.
+OUTPUT TRUNCATION: Tool results truncated at 8000 chars. Redirect large output to $WORKSPACE/ files.
 </efficiency_rules>
 
 <scan_methodology>
@@ -273,30 +383,37 @@ Database: PostgreSQL via Unixcorn daemon
 </system_environment>
 
 <available_tools>
-- run_terminal_cmd: Execute any shell command (recon, scanning, exploitation, analysis)
+- run_terminal_cmd: Execute shell command (blocks until done, output returned)
+- run_background_cmd: Run command in background, returns PID immediately
+- list_processes: List background processes for this session
+- kill_process: Kill background process by PID
 - file_read: Read file contents
 - file_write: Write/create files (reports, exploits, wordlists)
 - web_search: Web search for CVEs, exploits, documentation
 - open_url: Fetch URL content (CVE details, exploit code, API docs)
+- http_request: Structured HTTP request (method, headers, body, proxy, redirects)
 </available_tools>`
 
 	if loadedResources != "" {
 		base += "\n\n<methodology_and_tools>\nThe following are your methodology reference and tool documentation:\n\n" + loadedResources + "\n</methodology_and_tools>"
 	}
 
+	base += sessionCtx
 	return base
 }
 
 // ---- SSE event types ----
 
 type SSEEvent struct {
-	Type    string `json:"type"`
-	Content string `json:"content,omitempty"`
-	Name    string `json:"name,omitempty"`
-	Args    any    `json:"args,omitempty"`
-	Result  string `json:"result,omitempty"`
-	Error   string `json:"error,omitempty"`
-	Model   string `json:"model,omitempty"`
+	Type             string `json:"type"`
+	Content          string `json:"content,omitempty"`
+	Name             string `json:"name,omitempty"`
+	Args             any    `json:"args,omitempty"`
+	Result           string `json:"result,omitempty"`
+	Error            string `json:"error,omitempty"`
+	Model            string `json:"model,omitempty"`
+	PromptTokens     int    `json:"prompt_tokens,omitempty"`
+	CompletionTokens int    `json:"completion_tokens,omitempty"`
 }
 
 // ---- OpenRouter types ----
@@ -399,6 +516,20 @@ func StreamSession(c *gin.Context) {
 	pipeJobToClient(c, job)
 }
 
+// StopSessionHandler cancels a session's background agent goroutine.
+// POST /api/ai/sessions/:id/stop
+func StopSessionHandler(c *gin.Context) {
+	idStr := c.Param("id")
+	var id int64
+	fmt.Sscanf(idStr, "%d", &id)
+
+	j := getJob(id)
+	if j != nil {
+		j.Stop()
+	}
+	c.JSON(http.StatusOK, gin.H{"stopped": j != nil})
+}
+
 // ActiveSessionHandler returns whether a session has an active background job.
 // GET /api/ai/sessions/:id/active
 func ActiveSessionHandler(c *gin.Context) {
@@ -455,7 +586,7 @@ func ChatHandler(c *gin.Context) {
 	job := newJob(sessionID)
 	go func() {
 		defer deleteJob(sessionID)
-		runAgent(job.Publish, req, model, apiKey, baseURL, sessionID)
+		runAgent(job.Publish, req, model, apiKey, baseURL, sessionID, job.Context())
 	}()
 
 	pipeJobToClient(c, job)
@@ -463,11 +594,15 @@ func ChatHandler(c *gin.Context) {
 
 // runAgent is the agent loop. Decoupled from HTTP — runs to completion
 // regardless of client connectivity. Emits events via the publish callback.
-func runAgent(publish func(SSEEvent), req ChatRequest, model, apiKey, baseURL string, sessionID int64) {
+func runAgent(publish func(SSEEvent), req ChatRequest, model, apiKey, baseURL string, sessionID int64, jobCtx context.Context) {
 	publish(SSEEvent{Type: "meta", Model: model})
 
+	// Per-session workspace: /tmp/unixcorn/{sessionID}/
+	workspace := fmt.Sprintf("/tmp/unixcorn/%d", sessionID)
+	os.MkdirAll(workspace, 0755)
+
 	var msgs []orMessage
-	msgs = append(msgs, orMessage{Role: "system", Content: buildSystemPrompt()})
+	msgs = append(msgs, orMessage{Role: "system", Content: buildSystemPrompt(req.Target, workspace)})
 	for _, m := range req.Messages {
 		msgs = append(msgs, orMessage{
 			Role:       m.Role,
@@ -478,9 +613,17 @@ func runAgent(publish func(SSEEvent), req ChatRequest, model, apiKey, baseURL st
 	}
 
 	useTools := true
+	var totalPromptTokens, totalCompletionTokens int
 
 	maxIter := 25
 	for iter := 0; iter < maxIter; iter++ {
+		// Check if user stopped the session
+		select {
+		case <-jobCtx.Done():
+			goto done
+		default:
+		}
+
 		// When approaching limit, tell model to wrap up
 		if iter == maxIter-3 {
 			msgs = append(msgs, orMessage{
@@ -520,6 +663,10 @@ func runAgent(publish func(SSEEvent), req ChatRequest, model, apiKey, baseURL st
 			if chunk.Error != nil {
 				publish(SSEEvent{Type: "error", Error: chunk.Error.Message})
 				goto done
+			}
+			if chunk.Usage != nil {
+				totalPromptTokens = chunk.Usage.PromptTokens
+				totalCompletionTokens = chunk.Usage.CompletionTokens
 			}
 			for _, choice := range chunk.Choices {
 				if choice.Delta.ReasoningContent != "" {
@@ -601,14 +748,14 @@ func runAgent(publish func(SSEEvent), req ChatRequest, model, apiKey, baseURL st
 			}
 
 			publish(SSEEvent{Type: "tool_start", Name: tc.Function.Name, Args: args})
-			result := executeTool(tc.Function.Name, args)
+			result := executeTool(tc.Function.Name, args, sessionID, workspace, req.Target)
 			publish(SSEEvent{Type: "tool_end", Name: tc.Function.Name, Result: result})
 			msgs = append(msgs, orMessage{Role: "tool", ToolCallID: tc.ID, Content: result})
 		}
 	}
 
 done:
-	publish(SSEEvent{Type: "done"})
+	publish(SSEEvent{Type: "done", PromptTokens: totalPromptTokens, CompletionTokens: totalCompletionTokens})
 }
 
 // validateMessages ensures every assistant message with tool_calls is followed
@@ -784,10 +931,16 @@ func doCallOpenRouterWithTools(model, apiKey, baseURL string, messages []orMessa
 
 // ---- tool execution ----
 
-func executeTool(name string, args map[string]any) string {
+func executeTool(name string, args map[string]any, sessionID int64, workspace, target string) string {
 	switch name {
 	case "run_terminal_cmd":
-		return execTerminal(args)
+		return execTerminal(args, workspace, target)
+	case "run_background_cmd":
+		return execBackgroundCmd(args, sessionID, workspace, target)
+	case "list_processes":
+		return execListProcesses(sessionID)
+	case "kill_process":
+		return execKillProcess(args)
 	case "file_read":
 		return execFileRead(args)
 	case "file_write":
@@ -796,12 +949,14 @@ func executeTool(name string, args map[string]any) string {
 		return execWebSearch(args)
 	case "open_url":
 		return execOpenURL(args)
+	case "http_request":
+		return execHTTPRequest(args)
 	default:
 		return fmt.Sprintf("unknown tool: %s", name)
 	}
 }
 
-func execTerminal(args map[string]any) string {
+func execTerminal(args map[string]any, workspace, target string) string {
 	cmdStr, _ := args["command"].(string)
 	if cmdStr == "" {
 		return "error: no command provided"
@@ -821,6 +976,7 @@ func execTerminal(args map[string]any) string {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
+	cmd.Env = append(os.Environ(), "WORKSPACE="+workspace, "TARGET="+target)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -852,6 +1008,169 @@ func execTerminal(args map[string]any) string {
 	}
 
 	return result
+}
+
+func execBackgroundCmd(args map[string]any, sessionID int64, workspace, target string) string {
+	cmdStr, _ := args["command"].(string)
+	if cmdStr == "" {
+		return "error: no command provided"
+	}
+
+	logFile := fmt.Sprintf("%s/bg_PLACEHOLDER.log", workspace)
+	// Will be updated once we have PID
+	wrappedCmd := fmt.Sprintf("(%s) > %s 2>&1", cmdStr, logFile)
+
+	cmd := exec.Command("bash", "-c", wrappedCmd)
+	cmd.Env = append(os.Environ(), "WORKSPACE="+workspace, "TARGET="+target)
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Sprintf("error starting background command: %s", err.Error())
+	}
+
+	pid := cmd.Process.Pid
+	realLog := fmt.Sprintf("%s/bg_%d.log", workspace, pid)
+	// Rename the placeholder log reference in the command (already running — log path with PLACEHOLDER won't exist yet, rename after)
+	// Actually just restart the log path correctly by using PID in the wrapped command next time.
+	// For now, rename if placeholder file exists
+	os.Rename(logFile, realLog)
+
+	proc := &bgProc{cmd: cmd, cmdStr: cmdStr, started: time.Now()}
+	bgProcsMu.Lock()
+	bgProcs[sessionID] = append(bgProcs[sessionID], proc)
+	bgProcsMu.Unlock()
+
+	go cmd.Wait()
+
+	return fmt.Sprintf("PID: %d | Command started in background\nLog: %s\nRead progress with: file_read {\"path\":\"%s\"}", pid, realLog, realLog)
+}
+
+func execListProcesses(sessionID int64) string {
+	bgProcsMu.Lock()
+	procs := bgProcs[sessionID]
+	bgProcsMu.Unlock()
+
+	if len(procs) == 0 {
+		return "No background processes for this session"
+	}
+
+	var lines []string
+	for _, p := range procs {
+		if p.cmd.Process == nil {
+			continue
+		}
+		status := "running"
+		if p.cmd.ProcessState != nil {
+			if p.cmd.ProcessState.Exited() {
+				status = fmt.Sprintf("exited (code %d)", p.cmd.ProcessState.ExitCode())
+			}
+		}
+		elapsed := time.Since(p.started).Round(time.Second)
+		lines = append(lines, fmt.Sprintf("PID %d [%s] %s — %s", p.cmd.Process.Pid, status, elapsed, p.cmdStr))
+	}
+
+	if len(lines) == 0 {
+		return "No active processes"
+	}
+	return strings.Join(lines, "\n")
+}
+
+func execKillProcess(args map[string]any) string {
+	pidFloat, ok := args["pid"].(float64)
+	if !ok {
+		return "error: invalid or missing pid"
+	}
+	pid := int(pidFloat)
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Sprintf("error finding process %d: %s", pid, err.Error())
+	}
+
+	if err := proc.Kill(); err != nil {
+		return fmt.Sprintf("error killing process %d: %s", pid, err.Error())
+	}
+
+	return fmt.Sprintf("process %d killed", pid)
+}
+
+func execHTTPRequest(args map[string]any) string {
+	urlStr, _ := args["url"].(string)
+	if urlStr == "" {
+		return "error: no URL provided"
+	}
+
+	method := "GET"
+	if m, ok := args["method"].(string); ok && m != "" {
+		method = strings.ToUpper(m)
+	}
+
+	timeoutStr := "30s"
+	if t, ok := args["timeout"].(string); ok && t != "" {
+		timeoutStr = t
+	}
+	dur, err := time.ParseDuration(timeoutStr)
+	if err != nil {
+		dur = 30 * time.Second
+	}
+
+	transport := &http.Transport{TLSClientConfig: nil}
+	if proxyStr, ok := args["proxy"].(string); ok && proxyStr != "" {
+		if proxyURL, err := url.Parse(proxyStr); err == nil {
+			transport.Proxy = http.ProxyURL(proxyURL)
+		}
+	}
+
+	client := &http.Client{Timeout: dur, Transport: transport}
+
+	followStr, _ := args["follow_redirects"].(string)
+	if followStr == "false" {
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
+
+	bodyStr, _ := args["body"].(string)
+	var bodyReader io.Reader
+	if bodyStr != "" {
+		bodyReader = strings.NewReader(bodyStr)
+	}
+
+	req, err := http.NewRequest(method, urlStr, bodyReader)
+	if err != nil {
+		return fmt.Sprintf("error creating request: %s", err.Error())
+	}
+
+	if headers, ok := args["headers"].(map[string]any); ok {
+		for k, v := range headers {
+			if vs, ok := v.(string); ok {
+				req.Header.Set(k, vs)
+			}
+		}
+	}
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36")
+	}
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	elapsed := time.Since(start)
+	if err != nil {
+		return fmt.Sprintf("request failed (%dms): %s", elapsed.Milliseconds(), err.Error())
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("HTTP %d %s | %dms | %d bytes\n", resp.StatusCode, resp.Status, elapsed.Milliseconds(), len(respBody)))
+	sb.WriteString("--- Response Headers ---\n")
+	for k, vs := range resp.Header {
+		sb.WriteString(fmt.Sprintf("%s: %s\n", k, strings.Join(vs, ", ")))
+	}
+	sb.WriteString("--- Body ---\n")
+	sb.WriteString(truncate(string(respBody), 10000))
+
+	return sb.String()
 }
 
 func execFileRead(args map[string]any) string {
@@ -1001,4 +1320,71 @@ func stripHTML(s string) string {
 
 func urlQueryEscape(s string) string {
 	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
+}
+
+// ---- workspace file browser ----
+
+type wsFileInfo struct {
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	ModTime string `json:"mod_time"`
+	IsDir   bool   `json:"is_dir"`
+}
+
+// WorkspaceListHandler lists files in a session's workspace directory.
+// GET /api/ai/sessions/:id/workspace
+func WorkspaceListHandler(c *gin.Context) {
+	idStr := c.Param("id")
+	var id int64
+	fmt.Sscanf(idStr, "%d", &id)
+
+	workspace := fmt.Sprintf("/tmp/unixcorn/%d", id)
+	entries, err := os.ReadDir(workspace)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"files": []any{}, "workspace": workspace})
+		return
+	}
+
+	var files []wsFileInfo
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, wsFileInfo{
+			Name:    e.Name(),
+			Size:    info.Size(),
+			ModTime: info.ModTime().Format(time.RFC3339),
+			IsDir:   e.IsDir(),
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"files": files, "workspace": workspace})
+}
+
+// WorkspaceFileHandler returns content of a specific workspace file.
+// GET /api/ai/sessions/:id/workspace/:filename
+func WorkspaceFileHandler(c *gin.Context) {
+	idStr := c.Param("id")
+	var id int64
+	fmt.Sscanf(idStr, "%d", &id)
+
+	filename := c.Param("filename")
+	if strings.Contains(filename, "..") || strings.ContainsRune(filename, '/') {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid filename"})
+		return
+	}
+
+	path := fmt.Sprintf("/tmp/unixcorn/%d/%s", id, filename)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"name":    filename,
+		"content": truncate(string(data), 200000),
+		"size":    len(data),
+	})
 }
